@@ -50,7 +50,7 @@ PROBE_SCRATCH_DIRS = {"STRAND"}
 # Never removed under any rule below, regardless of what else matches.
 # Exact names (no suffix variants expected) vs. prefixes (counters/pointers
 # that carry a numeric or .NEW-style suffix written by the BBS itself).
-PROTECTED_EXACT = {"USR LOG", "USR PROF", "ACCESS", "CALLERS", "T64.SIEC"}
+PROTECTED_EXACT = {"USR LOG", "USR PROF", "ACCESS", "CALLERS", "STATUS", "T64.SIEC"}
 PROTECTED_PREFIXES = (
     "syscnt", "USR.PTR", "USR.DAY", "BOARDS", "UDS", "VOTE1", "DOORS",
 )
@@ -65,6 +65,19 @@ OVL_RE = re.compile(r"^ovl_.*\.prg$", re.IGNORECASE)
 SEQ_RE = re.compile(r"^(.*)\.seq$", re.IGNORECASE)
 
 
+def manifest_name(section, name, manifest):
+    """The manifest entry a live file IS (same section, same name ignoring
+    case), or None. Case-insensitive because the stick is FAT and SoftIEC
+    writes its own case: the C64 leaves "BOARDS.seq" where the migration
+    wrote "boards.seq", and an FTP upload of the latter replaces the former
+    in place — they are one file, not a collision."""
+    lname = name.lower()
+    for msection, mname in manifest:
+        if msection == section and mname.lower() == lname:
+            return mname
+    return None
+
+
 def _cbm_key(name):
     """The CBM name SoftIEC presents a host file under: case-folded, with a
     trailing ".seq" type marker removed. Two host names with equal keys are
@@ -74,13 +87,17 @@ def _cbm_key(name):
 
 
 def is_protected(name):
-    if name in PROTECTED_EXACT:
+    # Matched on the CBM name (case-folded, ".seq" stripped): "usr log.seq"
+    # as the migration writes it and "USR LOG.seq" as the C64 writes it are
+    # both the user database.
+    key = _cbm_key(name).upper()
+    if key in PROTECTED_EXACT:
         return True
     for prefix in PROTECTED_PREFIXES:
-        if name.upper().startswith(prefix.upper()):
+        if key.startswith(prefix.upper()):
             return True
     for pat in PROTECTED_PATTERNS:
-        if pat.match(name):
+        if pat.match(key):
             return True
     return False
 
@@ -109,7 +126,7 @@ def classify_entry(section, name, manifest):
     if name.upper() == "STRAND":
         return ("REMOVE", "probe scratch directory (src-diag/siecprobe.c CD:STRAND)")
 
-    if (section, name) in manifest:
+    if manifest_name(section, name, manifest) is not None:
         return ("KEEP", "part of this deploy")
 
     # Collision: two host files that SoftIEC presents under one CBM name.
@@ -294,7 +311,7 @@ def cmd_verify(args):
             decision, reason = classify_entry(section, name, manifest)
             if decision == "SKIP":
                 continue
-            seen.add((section, name))
+            seen.add((section, name.lower()))
             label = f"{section}/{name}" if section != "ROOT" else name
             if decision == "REMOVE":
                 leftovers.append((label, reason))
@@ -303,7 +320,7 @@ def cmd_verify(args):
 
     missing = []
     for section, name in sorted(manifest):
-        if (section, name) not in seen:
+        if (section, name.lower()) not in seen:
             label = f"{section}/{name}" if section != "ROOT" else name
             missing.append(label)
 
@@ -337,6 +354,27 @@ def cmd_verify(args):
     return 0 if ok else 1
 
 
+def cmd_existing_data(args):
+    """Print the manifest entries that are protected data (user database,
+    boards, message index/bodies, file areas, doors, counters) AND already
+    exist on the device — one relative path per line. deploy.sh --keep-data
+    skips uploading exactly these, so a redeploy refreshes binaries, gfiles
+    and CONFIG without resetting the live install to the seed."""
+    manifest = load_manifest(args.manifest)
+    listings = parse_listing_args(args.listing)
+    remote_keys = {(section, _cbm_key(n))
+                   for section, names in listings.items() for n in names}
+    kept = []
+    for section, mname in sorted(manifest):
+        if not is_protected(mname) or mname.upper() == "T64.SIEC":
+            continue   # the section marker is not data; always refresh it
+        if (section, _cbm_key(mname)) in remote_keys:
+            kept.append(f"{section}/{mname}" if section != "ROOT" else mname)
+    for line in kept:
+        print(line)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -352,6 +390,11 @@ def main():
     common.add_argument("--listing", action="append", default=[], metavar="SECTION=path.json",
                          help="repeatable: one `c64u fs ls <dir> --json` capture per "
                               "section (ROOT, SYSTEM, MSGS, FILES, DOORS)")
+
+    p_keep = sub.add_parser("existing-data", parents=[common],
+                             help="pre-upload: which manifest data files already "
+                                  "exist remotely (for --keep-data)")
+    p_keep.set_defaults(func=cmd_existing_data)
 
     p_classify = sub.add_parser("classify", parents=[common],
                                  help="pre-upload: what's safe to remove")

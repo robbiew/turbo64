@@ -244,6 +244,7 @@ real hardware.
 | `--device <n>` / `--base <path>` | (siec) SoftIEC bus id / Default Path (env `T64_SIEC_DEVICE` / `T64_SIEC_BASE`) |
 | `--clean` | (siec only) remove stale files under `--base` before uploading — old BOOT/ovl binaries, `src-diag/` diagnostics, probe scratch, and any `*.seq` leftover that collides with a file this deploy writes (see below) |
 | `--yes` | Skip `--clean`'s interactive delete confirmation |
+| `--keep-data` | (siec only) don't upload a data file (user database, boards, message index/bodies, file areas, doors, counters) that already exists on the device — binaries, overlays, gfiles and CONFIG are still refreshed. The "update a live install" mode; without it a redeploy resets users and boards to the seed. Needs `--execute` to look at the device |
 
 Run `tools/deploy.sh --help` for the full per-target breakdown, including
 why `c64u runners run-prg` cannot launch the `siec` target at all (it

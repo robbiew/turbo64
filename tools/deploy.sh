@@ -54,6 +54,15 @@
 #                          leftovers and upload failures.
 #   --yes                  Skip --clean's interactive delete confirmation.
 #                           Ignored without --clean.
+#   --keep-data            Do not upload a data file (user database, boards,
+#                          message index/bodies, file areas, doors, counters)
+#                          that already exists on the device. Binaries,
+#                          overlays, gfiles and CONFIG are still refreshed.
+#                          This is the "update a live install" mode: without
+#                          it a redeploy resets users and boards to the seed.
+#                          Needs --execute to look at the device; a dry run
+#                          just says so. Which names count as data is
+#                          siec_clean.py's protected set.
 #
 # uiec options:
 #   --uiec-device <n>     Physical drive's device number (default: 10; env
@@ -67,11 +76,13 @@
 #   `c64u runners run-prg` issues LOAD"<path>",8,1: it FORCES device 8 and
 #   TRUNCATES the path to 16 characters. It works for the d81 target (device
 #   8 is already correct there) but cannot launch the siec target at all —
-#   $BA ends up 8 and the BBS reports OVL_BOOT LOAD FAILED. For siec,
-#   `machine sendkey` is the only route found so far, and it is unreliable:
-#   it can drop the trailing RETURN when a line is chunked, so the text and
-#   the '\n' are sent as two separate calls here. If it does not take,
-#   type the two printed lines by hand.
+#   $BA ends up 8 and the BBS reports OVL_BOOT LOAD FAILED. For siec the
+#   launch is: machine reset, `drives softiec root <base>` (the SoftIEC
+#   working directory persists across resets and the BBS leaves it inside
+#   SYSTEM/, so a bare LOAD fails with ?FILE NOT FOUND), then LOAD and RUN
+#   through `machine sendkey` with the text and the '\n' as separate calls.
+#   Verified on hardware; if it does not take, type the two printed lines
+#   by hand.
 #
 #   uiec automation (--launch): COPYALL.prg is itself loaded via run-prg
 #   (device 8, so run-prg's forced device is correct), then a "C" keystroke
@@ -134,7 +145,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 show_help() {
-    sed -n '2,123p' "$0"
+    sed -n '2,131p' "$0"
 }
 
 TARGET="${1:-}"
@@ -145,6 +156,7 @@ LAUNCH=0
 BUILD=1
 CLEAN=0
 CLEAN_YES=0
+KEEP_DATA=0
 VERIFY_FAILED=0
 D81_SEED="$ROOT/data/users-seed.d81"
 D81_DRIVE="a"
@@ -159,6 +171,7 @@ while [[ $# -gt 0 ]]; do
         --no-build)     BUILD=0; shift ;;
         --clean)        CLEAN=1; shift ;;
         --yes)          CLEAN_YES=1; shift ;;
+        --keep-data)    KEEP_DATA=1; shift ;;
         --seed)         D81_SEED="$2"; shift 2 ;;
         --drive)        D81_DRIVE="$2"; shift 2 ;;
         --device)       SIEC_DEVICE="$2"; shift 2 ;;
@@ -174,6 +187,11 @@ case "$TARGET" in
     -h|--help|"") show_help; exit 0 ;;
     *) echo "Unknown target: $TARGET (expected d81, siec, or uiec)" >&2; exit 1 ;;
 esac
+
+if [ "$KEEP_DATA" -eq 1 ] && [ "$TARGET" != "siec" ]; then
+    echo "ERROR: --keep-data is only supported for the siec target." >&2
+    exit 1
+fi
 
 if [ "$CLEAN" -eq 1 ] && [ "$TARGET" != "siec" ]; then
     echo "ERROR: --clean is only supported for the siec target (d81 replaces the" >&2
@@ -608,6 +626,36 @@ siec_verify_pass() {
     echo ""
 }
 
+mkdir_quiet() {
+    if [ "$EXECUTE" -eq 1 ]; then
+        "$BIN" fs mkdir "$1" >/dev/null 2>&1 || true
+    else
+        echo "[dry-run] c64u fs mkdir $1"
+    fi
+}
+
+# --keep-data: which manifest entries to skip. Lists the live tree and asks
+# siec_clean.py which protected data files are already there (matched on
+# the CBM name, so the C64's "BOARDS.seq" counts for the manifest's
+# "boards.seq"). Prints one manifest-relative path per line. A dry run
+# cannot look at the device, so it prints nothing and says why.
+siec_keep_data_list() {
+    local manifest="$1"
+    if [ "$EXECUTE" -eq 0 ]; then
+        echo -e "${YELLOW}[dry-run] --keep-data: would list ${SIEC_BASE} and skip uploading" \
+                 "any protected data file already present (needs --execute).${NC}" >&2
+        return
+    fi
+    local work
+    work="$(mktemp -d)"
+    local listing_args=()
+    while IFS= read -r line; do
+        listing_args+=("$line")
+    done < <(siec_fetch_listings "$work")
+    python3 "$ROOT/tools/siec_clean.py" existing-data \
+        --manifest "$manifest" --base "$SIEC_BASE" "${listing_args[@]}"
+}
+
 deploy_siec() {
     if [ "$BUILD" -eq 1 ]; then
         echo -e "${BLUE}Building SIEC binaries...${NC}"
@@ -647,17 +695,29 @@ deploy_siec() {
     (cd "$tree" && find . -type f | sed 's#^\./##') | LC_ALL=C sort >"$manifest"
 
     echo -e "${BLUE}Uploading tree to ${SIEC_BASE} (device ${SIEC_DEVICE})...${NC}"
-    run_c64u fs mkdir "$SIEC_BASE" || true
+    # `fs mkdir` on a folder that already exists prints "Failed to create
+    # directory" — every redeploy hit five of those. Silence it; a folder
+    # that genuinely could not be made fails loudly at the first upload.
+    mkdir_quiet "$SIEC_BASE"
     for section in SYSTEM MSGS FILES DOORS; do
-        run_c64u fs mkdir "$SIEC_BASE/$section" || true
+        mkdir_quiet "$SIEC_BASE/$section"
     done
 
     if [ "$CLEAN" -eq 1 ]; then
         siec_clean_pass "$manifest"
     fi
 
+    local skip=""
+    if [ "$KEEP_DATA" -eq 1 ]; then
+        skip="$(siec_keep_data_list "$manifest")"
+    fi
+
     while IFS= read -r -d '' f; do
         local rel="${f#"$tree"/}"
+        if [ -n "$skip" ] && printf '%s\n' "$skip" | grep -qxF "$rel"; then
+            echo "  keep-data: not uploading $rel (exists on device)"
+            continue
+        fi
         run_c64u fs upload "$f" "$SIEC_BASE/$rel"
     done < <(find "$tree" -type f -print0)
 
@@ -669,10 +729,26 @@ deploy_siec() {
     # the REL BOOT binary above, it does not carry $VERSION_COMPACT.
     local boot_name="BOOT-SIEC"
     if [ "$LAUNCH" -eq 1 ]; then
-        echo -e "${BLUE}Attempting best-effort launch via sendkey (UNRELIABLE — watch the console)...${NC}"
+        # Verified on hardware (firmware 1.1.0, c64u v1.0.0), and the only
+        # sequence that has worked every time:
+        #  1. reset — the C64 must be at the BASIC prompt for step 2, and
+        #     whatever was running (usually the BBS itself) has to go anyway.
+        #  2. `drives softiec root <base>` — the SoftIEC working directory
+        #     PERSISTS across a reset, and the BBS leaves it in SYSTEM/ (or
+        #     wherever the last overlay load was). LOAD"BOOT-SIEC" from there
+        #     is a plain ?FILE NOT FOUND. This call puts the cursor back at
+        #     the tree root; it refuses (harmlessly) if the C64 is not at
+        #     BASIC, which is why the reset comes first.
+        #  3. LOAD / RUN through the keyboard buffer, text and RETURN as
+        #     separate calls. The load takes ~10 s over SoftIEC, so RUN is
+        #     sent after a generous pause rather than immediately.
+        echo -e "${BLUE}Launching: reset, SoftIEC root -> ${SIEC_BASE}, then LOAD/RUN via sendkey...${NC}"
+        run_c64u machine reset
+        [ "$EXECUTE" -eq 1 ] && sleep 4
+        run_c64u drives softiec root "$SIEC_BASE"
         run_c64u machine sendkey "LOAD\"${boot_name}\",${SIEC_DEVICE}"
         run_c64u machine sendkey '\n'
-        sleep 1
+        [ "$EXECUTE" -eq 1 ] && sleep 14
         run_c64u machine sendkey 'RUN'
         run_c64u machine sendkey '\n'
     fi
