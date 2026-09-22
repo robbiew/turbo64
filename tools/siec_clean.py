@@ -65,6 +65,14 @@ OVL_RE = re.compile(r"^ovl_.*\.prg$", re.IGNORECASE)
 SEQ_RE = re.compile(r"^(.*)\.seq$", re.IGNORECASE)
 
 
+def _cbm_key(name):
+    """The CBM name SoftIEC presents a host file under: case-folded, with a
+    trailing ".seq" type marker removed. Two host names with equal keys are
+    the same file to the C64."""
+    m = SEQ_RE.match(name)
+    return (m.group(1) if m else name).lower()
+
+
 def is_protected(name):
     if name in PROTECTED_EXACT:
         return True
@@ -104,11 +112,22 @@ def classify_entry(section, name, manifest):
     if (section, name) in manifest:
         return ("KEEP", "part of this deploy")
 
-    m = SEQ_RE.match(name)
-    if m and (section, m.group(1)) in manifest:
-        return ("REMOVE",
-                 f"*.seq collides with deploy file {m.group(1)!r} — SoftIEC "
-                 f"strips the type-marker extension, so which one opens is undefined")
+    # Collision: two host files that SoftIEC presents under one CBM name.
+    # Compared case-insensitively with any ".seq" marker stripped from BOTH
+    # sides — SoftIEC matches names without regard to case (the stick is
+    # FAT), so "callers.seq" and "CALLERS" are the same CBM file. Measured
+    # on hardware 2026-09-21: the C64 reads the extensionless copy but its
+    # scratch/write create and update the ".seq" one, so whichever of the
+    # pair this deploy is NOT writing is a stale shadow and must go. This
+    # runs before is_protected() on purpose: a stale "CALLERS" beside the
+    # deploy's "callers.seq" would otherwise be kept as protected data.
+    key = _cbm_key(name)
+    for msection, mname in manifest:
+        if msection == section and _cbm_key(mname) == key:
+            return ("REMOVE",
+                     f"collides with deploy file {mname!r} — SoftIEC strips "
+                     f"the type-marker extension and ignores case, so both "
+                     f"answer to the same CBM name")
 
     if is_protected(name):
         return ("KEEP", "protected: user/message/file-area data or runtime counter")

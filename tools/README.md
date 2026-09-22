@@ -250,9 +250,14 @@ why `c64u runners run-prg` cannot launch the `siec` target at all (it
 forces device 8 and truncates the path).
 
 **`--clean` (siec only):** SoftIEC derives the CBM filename by stripping a
-host-side type-marker extension, so a scratch file named `USR LOG.seq`
-sitting beside the real `USR LOG` presents the SAME CBM name — which one
-opens is undefined. `--clean` classifies (via `tools/siec_clean.py`)
+host-side type-marker extension and ignores case, so `CALLERS` sitting
+beside `callers.seq` presents the SAME CBM name. Measured on hardware: the
+C64 *reads* the extensionless copy but its scratch and write land on the
+`.seq` one, so every save is silently lost to the stale twin. That is why
+`migrate-d81.py` now writes every data file as lowercase `<name>.seq` (the
+spelling SoftIEC itself produces), and why `--clean` removes whichever half
+of such a pair this deploy is not writing — a tree migrated by an older
+build carries 25 extensionless twins. `--clean` classifies (via `tools/siec_clean.py`)
 everything currently under `--base` as safe-to-remove or must-keep, and
 defaults to keeping: anything not positively matched by a remove rule is
 reported unrecognized and left alone. User/message/file-area data (`USR

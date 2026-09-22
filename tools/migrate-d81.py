@@ -6,14 +6,24 @@ never modified, so a failed run loses nothing.
 
 Produces the layout verified on hardware:
     <outdir>/         CONFIG, ovl_boot.prg, BOOT-SIEC.prg, CONFIGURE-SIEC.prg
-    <outdir>/SYSTEM/  the other six overlays, USR LOG, USR PROF, ACCESS,
-                      CALLERS, T64.SIEC, all gfiles/menus/prompts
-    <outdir>/MSGS/    T64.SIEC (+ USR.PTR, BOARDS, B<n>.IDX, B<n>.TXT)
-    <outdir>/FILES/   T64.SIEC (+ UDS, UD<n>)
-    <outdir>/DOORS/   T64.SIEC (+ DOORS)
+    <outdir>/SYSTEM/  the other six overlays, usr log.seq, usr prof.seq,
+                      access.seq, callers.seq, T64.SIEC, all gfiles/menus/prompts
+    <outdir>/MSGS/    T64.SIEC (+ usr.ptr.seq, boards.seq, b<n>.idx.seq, b<n>.txt.seq)
+    <outdir>/FILES/   T64.SIEC (+ uds.seq, ud<n>.seq)
+    <outdir>/DOORS/   T64.SIEC (+ doors.seq)
 CONFIG and ovl_boot.prg MUST be at the root: main() loads OVL_BOOT and
 cfg_init() reads CONFIG before any section path is registered, using
 whatever directory the KERNAL cursor is already sitting in.
+
+Every migrated data file is written as "<name>.seq", lowercase — the host
+name SoftIEC itself produces when the C64 writes "<NAME>,S,W". This is not
+cosmetic. MEASURED on a C64 Ultimate (firmware 1.1.0, 2026-09-21): an
+extensionless "CALLERS" written from the PC opens fine for reading, but a
+scratch of "CALLERS" from the C64 does NOT remove it, and a subsequent
+write creates "callers.seq" beside it. Reads then keep opening the stale
+extensionless copy, so every save CONFIGURE or the BBS made to ACCESS,
+CALLERS (and by the same path the record sets) was silently discarded. With
+the ".seq" name there is one file, and scratch/rename/open all hit it.
 """
 import argparse
 import os
@@ -94,6 +104,15 @@ SYSTEM_SIEC_ARTIFACTS = [
 # and the example door ships configured for section 3 (doors).
 DOOR_PRG_SRC = "FORTUNE.prg"   # build/c64/FORTUNE.prg, from `make door-example`
 DOOR_PRG_DST = "fortune.prg"   # DOORS/fortune.prg; SoftIEC strips ".prg" -> CBM name FORTUNE
+
+
+def host_name(canon):
+    """Host filename for a migrated data file: the form SoftIEC writes
+    itself, so the C64's later scratch/rename/open all address the same
+    file (see module docstring). SoftIEC matches CBM names case-insensitively
+    and strips the ".seq" type marker, so "callers.seq" answers to CALLERS.
+    """
+    return canon.lower() + ".seq"
 
 
 def trim_records(data, record_size):
@@ -351,7 +370,7 @@ def main():
         with open(tmp, "rb") as f:
             data = f.read()
         out = trim_records(data, size) if size else data
-        with open(os.path.join(args.outdir, section, canon), "wb") as f:
+        with open(os.path.join(args.outdir, section, host_name(canon)), "wb") as f:
             f.write(out)
         if size:
             converted.append(f"{canon}: {len(data)} -> {len(out)} bytes "

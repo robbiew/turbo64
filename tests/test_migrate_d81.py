@@ -64,6 +64,16 @@ check("classify.access", mig.classify_entry("access", "seq"),
 check("classify.callers", mig.classify_entry("callers", "seq"),
       ("CALLERS", "SYSTEM", None))
 
+# --- host_name: the on-stick spelling of every migrated data file ---------
+
+# Must be exactly what SoftIEC writes for "<NAME>,S,W" (lowercase + ".seq"):
+# an extensionless PC-written copy survives the C64's scratch and shadows
+# every later save (measured on hardware — see the module docstring).
+check("host_name.callers", mig.host_name("CALLERS"), "callers.seq")
+check("host_name.space", mig.host_name("USR LOG"), "usr log.seq")
+check("host_name.dotted", mig.host_name("B3.IDX"), "b3.idx.seq")
+check("host_name.gfile", mig.host_name("g.login 1 80"), "g.login 1 80.seq")
+
 # Message bodies (SEQ, not REL) live alongside their B<n>.IDX in MSGS/.
 check("classify.board_txt", mig.classify_entry("b7.txt", "seq"),
       ("B7.TXT", "MSGS", None))

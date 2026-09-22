@@ -478,16 +478,14 @@ siec_section_path() {
 # from a dry run. A directory that does not exist yet (e.g. first-ever
 # deploy) is treated as empty rather than failing the whole pass.
 #
-# --json is NOT optional here. Plain `c64u fs ls <dir>` (vendor/c64u, the
-# upstream Go binary) panics — output.GetFileIcon does LastIndex(name, ".")
-# and slices on the -1 result — on any entry with no extension. Every
-# directory this project cares about has one: CONFIG at the tree root,
-# USR LOG / ACCESS / CALLERS / T64.SIEC under SYSTEM/. Do not "simplify"
-# this back to human-readable output — it would panic the classify/verify
-# pass on exactly the trees it exists to protect (--clean's protected-file
-# logic failing open is the dangerous direction). This is the only call
-# site in tools/ that shells out to `fs ls`; siec_clean.py never talks to
-# c64u itself, it only parses the JSON this function already captured.
+# --json is used here because it is the stable, parseable form. Older
+# vendor/c64u builds also panicked in plain `fs ls` on any entry with no
+# extension (output.GetFileIcon sliced on LastIndex(name, ".") == -1) —
+# c64u v1.0.0 lists CONFIG and USR LOG fine, but the JSON form is still
+# what siec_clean.py parses, so do not "simplify" this to human-readable
+# output. This is the only call site in tools/ that shells out to `fs ls`;
+# siec_clean.py never talks to c64u itself, it only parses the JSON this
+# function already captured.
 siec_fetch_listings() {
     local work="$1"
     local section path out
@@ -526,7 +524,8 @@ siec_clean_pass() {
         echo "  REMOVE  known src-diag/ diagnostic PRGs: SIECPROBE SEQTEST SEQNAME USRREAD"
         echo "          USRSWEEP CFGREAD PTEST RELTEST CPTEST DIR EXISTS CLEAN WIPE COPYALL"
         echo "  REMOVE  probe scratch: PERF.DAT*, SP1*, and the STRAND/ fixture directory"
-        echo "  REMOVE  *.seq files whose stripped name collides with a file this deploy writes"
+        echo "  REMOVE  any file that answers to the same CBM name as one this deploy writes"
+        echo "          (case-insensitive, .seq marker ignored: a stale CALLERS beside callers.seq)"
         echo "  KEEP    USR LOG, USR PROF, ACCESS, CALLERS, syscnt*, USR.PTR*, USR.DAY*,"
         echo "          BOARDS*, B<n>.IDX*, B<n>.TXT*, UDS*, UD<n>*, VOTE1*, DOORS*, T64.SIEC"
         echo "  KEEP    every file this deploy is about to write ($(wc -l <"$manifest" | tr -d ' ') files)"
@@ -618,7 +617,14 @@ deploy_siec() {
         # it here the tree ships with an empty DOORS/ and COPYALL reports
         # FORTUNE as a failure on every run — the same trap deploy_d81 was
         # already fixed for above.
-        (cd "$ROOT" && make c64-siec && make editor-siec && make door-example)
+        # The REL binaries are built too: assemble-d81.sh below refuses to
+        # run without BOOT-<ver>.prg / CONFIGURE-<ver>.prg, and that image is
+        # the migration's data source even though nothing mounts it. On a
+        # clean checkout this target used to die with "BOOT PRG not found";
+        # it only ever worked when build/c64/ still held REL output from an
+        # earlier build.
+        (cd "$ROOT" && make c64 && make editor \
+                    && make c64-siec && make editor-siec && make door-example)
     fi
 
     if [ ! -f "$D81_SEED" ]; then

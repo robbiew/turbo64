@@ -413,9 +413,16 @@ python3 tools/migrate-d81.py TURBO64-0.4.0.d81 siec-tree \
 
 This produces `siec-tree/` containing `CONFIG`, `ovl_boot.prg`, `BOOT-SIEC.prg`, and
 `CONFIGURE-SIEC.prg` at its root, and `SYSTEM/`, `MSGS/`, `FILES/`, `DOORS/` folders
-holding the remaining overlays, the migrated `USR LOG`/`USR PROF`/`ACCESS`/`CALLERS`
-records, gfiles, and the example door. `migrate-d81.py` copies both SIEC binaries
-automatically — there is no manual copy step for CONFIGURE.
+holding the remaining overlays, the migrated records and gfiles (written as lowercase
+`usr log.seq`, `callers.seq`, `g.login.seq` and so on — the spelling SoftIEC itself uses,
+so the C64's own saves overwrite them instead of creating a second copy), and the example
+door. `migrate-d81.py` copies both SIEC binaries automatically — there is no manual copy
+step for CONFIGURE.
+
+> **Upgrading a tree made by an earlier build:** those files were written without the
+> `.seq` extension, and on hardware a save from CONFIGURE or the BBS creates `callers.seq`
+> beside the old `CALLERS` while reads keep opening the old one — every save is lost.
+> Redeploy with `tools/deploy.sh siec --clean --execute`, which removes the stale copies.
 
 Then copy the entire contents of `siec-tree/` onto the stick or card at the `--base` path
 you gave above (Ultimate web UI, FTP, or however you move files onto its storage), so that
