@@ -74,7 +74,10 @@ static bbs_err_t disk_verify_section_marker(u8 device)
     krnio_open(CFG_FNUM_DATA, device, 2);
     krnio_close(CFG_FNUM_DATA);
     status = disk_status(device);
-    if (status == 62) return BBS_EIO;
+    /* Any DOS error, not just 62: a device that is absent, a wrong file
+     * type or a bad name would otherwise pass and mark the section verified
+     * for the rest of the run. */
+    if (status >= 20) return BBS_EIO;
     return BBS_OK;
 }
 

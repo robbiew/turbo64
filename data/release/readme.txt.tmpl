@@ -122,16 +122,21 @@ flags.
    (--base is where the tree will live on the stick; --device is the
    SoftIEC device number, 11 by default.)
 
-3. migrate-d81.py does not copy the config editor. If you want to run
-   CONFIGURE over SoftIEC too, copy it into the tree by hand:
-     cp build/c64/siec/CONFIGURE-__VERSION__-SIEC.prg siec-tree/
+   The tree includes both BOOT-SIEC.prg and CONFIGURE-SIEC.prg, so there
+   is nothing to copy by hand. Every data file in it is named the way the
+   Ultimate itself names files the C64 writes (usr log.seq, callers.seq,
+   config.seq, ...); leave those names alone.
 
-4. Copy the entire contents of siec-tree/ onto the USB stick or SD card
+3. Copy the entire contents of siec-tree/ onto the USB stick or SD card
    at the --base path you gave above, so that siec-tree/SYSTEM becomes
    /USB1/TURBO64/SYSTEM, and so on. Do not mount anything on device 11.
 
-5. Boot:
-     LOAD"BOOT-__VERSION__-SIEC",11
+4. Boot:
+     LOAD"BOOT-SIEC",11
+     RUN
+
+   To run the SysOp editor instead:
+     LOAD"CONFIGURE-SIEC",11
      RUN
 
    If the BBS reports section-folder or REU errors at boot, re-check the

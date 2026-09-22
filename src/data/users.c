@@ -295,7 +295,7 @@ bbs_err_t user_save(const user_record_t *rec, u8 device) {
   /* Write record */
   user_pack(rec, buf);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_USER);
-  rel_close(h);
+  err = rel_close_keep(h, err);
 
 #ifndef T64_STORE_SEQ
   if (err == BBS_OK && s_user_cache_valid && rec->id <= USERS_MAX) {
@@ -584,7 +584,7 @@ bbs_err_t user_profile_save(const user_profile_record_t *rec, u8 device) {
 
   user_profile_pack(rec, buf);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_USER_PROFILE);
-  rel_close(h);
+  err = rel_close_keep(h, err);
   return err;
 }
 #ifdef T64_STORE_SEQ

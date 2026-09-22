@@ -97,7 +97,7 @@ bbs_err_t usrptr_save(u16 user_id, const usr_ptr_record_t *rec, u8 device)
     if (err != BBS_OK) { rel_close(h); return err; }
 
     err = rel_write(h, buf, RECORD_SIZE_USR_PTR);
-    rel_close(h);
+    err = rel_close_keep(h, err);
     return err;
 }
 #ifdef T64_STORE_SEQ

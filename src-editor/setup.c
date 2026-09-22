@@ -125,7 +125,9 @@ bbs_err_t setup_create_user_database(u8 device) {
   }
   printf("\n");
 
-  rel_close(rh);
+  /* On the SEQ backend the disk write happens here, not in rel_write(). */
+  err = rel_close(rh);
+  if (err != BBS_OK) return err;
 
   {
     u8 dstat = disk_status(device);
@@ -196,7 +198,9 @@ bbs_err_t setup_create_user_profiles(u8 device) {
   }
   printf("\n");
 
-  rel_close(rh);
+  /* On the SEQ backend the disk write happens here, not in rel_write(). */
+  err = rel_close(rh);
+  if (err != BBS_OK) return err;
 
   {
     u8 dstat = disk_status(device);

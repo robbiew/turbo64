@@ -252,7 +252,7 @@ bbs_err_t vote_save(const vote_record_t *rec, u8 device) {
   /* Write record */
   vote_pack(rec, buf);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_VOTE);
-  rel_close(h);
+  err = rel_close_keep(h, err);
 
   return err;
 }

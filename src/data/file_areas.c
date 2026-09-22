@@ -261,7 +261,7 @@ bbs_err_t file_area_save(const ud_area_record_t *rec, u8 device) {
   /* Write record */
   file_area_pack(rec, buf);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_UD_AREA);
-  rel_close(h);
+  err = rel_close_keep(h, err);
 
   return err;
 }

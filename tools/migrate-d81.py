@@ -179,6 +179,11 @@ def classify_entry(name, kind):
 def list_image(c1541, image):
     """Return [(name, type), ...] for every directory entry in the image."""
     r = subprocess.run([c1541, image, "-list"], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"c1541 -list failed on {image} (exit {r.returncode}):\n"
+                 f"{(r.stderr or r.stdout).strip()}\n"
+                 f"Refusing to continue — an unreadable image would migrate as an "
+                 f"empty one and produce a tree with no user database.")
     entries = []
     for line in r.stdout.splitlines():
         m = re.match(r'^\s*\d+\s+"([^"]*)"\s+(\S+)', line)

@@ -164,7 +164,7 @@ AUTH_OVL_PRG_SIEC   := $(OUTDIR_SIEC)/ovl_auth.prg
 c64-siec: $(BOOT_SIEC_PRG)
 editor-siec: $(CONFIGURE_SIEC_PRG)
 
-$(BOOT_SIEC_PRG): src/main.c $(HAL_SRCS) $(DATA_SRCS) $(SESSION_SRCS) $(FEATURE_SRCS) $(PUB_HDRS)
+$(BOOT_SIEC_PRG): src/main.c $(HAL_SRCS) $(SIEC_REL_SRC) $(DATA_SRCS) $(SESSION_SRCS) $(FEATURE_SRCS) $(PUB_HDRS)
 	@mkdir -p $(OUTDIR_SIEC)
 	$(OSCAR64) $(CFLAGS) $(BOOT_DEFS) $(SIEC_DEFS) -o=$@ -d64=$(OVERLAYS_D64_SIEC) \
 	  $< $(filter-out src/hal/rel.c,$(HAL_SRCS)) $(SIEC_REL_SRC) \
@@ -172,7 +172,7 @@ $(BOOT_SIEC_PRG): src/main.c $(HAL_SRCS) $(DATA_SRCS) $(SESSION_SRCS) $(FEATURE_
 	@n="$$(basename $@ .prg)"; if [ $${#n} -gt 16 ]; then echo "ERROR: CBM name '$$n' is $${#n} chars (C64 limit 16): $@" >&2; exit 1; fi
 	@echo "Built: $@"
 
-$(CONFIGURE_SIEC_PRG): src-editor/main.c $(EDITOR_SRCS) src/hal/reu.c $(EDITOR_HAL_SRCS) $(DATA_SRCS) $(PUB_HDRS)
+$(CONFIGURE_SIEC_PRG): src-editor/main.c $(EDITOR_SRCS) src/hal/reu.c $(EDITOR_HAL_SRCS) $(SIEC_REL_SRC) $(DATA_SRCS) $(PUB_HDRS)
 	@mkdir -p $(OUTDIR_SIEC)
 	$(OSCAR64) $(CFLAGS) -i=$(ROOT)src-editor $(EDITOR_DEFS) $(SIEC_DEFS) -o=$@ \
 	  $< $(EDITOR_SRCS) $(filter-out src/hal/rel.c,$(EDITOR_HAL_SRCS)) $(SIEC_REL_SRC) src/hal/reu.c \
