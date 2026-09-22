@@ -74,6 +74,30 @@ check("host_name.space", mig.host_name("USR LOG"), "usr log.seq")
 check("host_name.dotted", mig.host_name("B3.IDX"), "b3.idx.seq")
 check("host_name.gfile", mig.host_name("g.login 1 80"), "g.login 1 80.seq")
 
+# --- merge_config: the image's settings survive, DEV_* are replaced -------
+
+_specs = {"SYSTEM": "11;/USB1/T/SYSTEM", "MSGS": "11;/USB1/T/MSGS",
+          "FILES": "11;/USB1/T/FILES", "DOORS": "11;/USB1/T/DOORS"}
+_src = b"BBS_NAME=A New T/64 BBS\nSYSOP_NAME=SYSOP\nDEV_SYSTEM=8\nDEV_MSGS=9\nBAUD_RATE=38400\n"
+_out = mig.merge_config(_src, _specs)
+check("merge.cr_terminated", _out.endswith("\r") and "\n" not in _out, True)
+_lines = _out.rstrip("\r").split("\r")
+check("merge.settings_kept",
+      [l for l in _lines if not l.startswith("DEV_")],
+      ["BBS_NAME=A New T/64 BBS", "SYSOP_NAME=SYSOP", "BAUD_RATE=38400"])
+check("merge.devices_replaced",
+      [l for l in _lines if l.startswith("DEV_")],
+      ["DEV_SYSTEM=11;/USB1/T/SYSTEM", "DEV_MSGS=11;/USB1/T/MSGS",
+       "DEV_FILES=11;/USB1/T/FILES", "DEV_DOORS=11;/USB1/T/DOORS",
+       "DEV_GFILES=11;/USB1/T/SYSTEM"])
+# CR-terminated source (what cfg_save() writes on the C64) parses the same.
+check("merge.cr_source",
+      mig.merge_config(b"BBS_CITY=X\rDEV_FILES=9\r", _specs).split("\r")[0],
+      "BBS_CITY=X")
+# No source config at all still yields a valid device-only CONFIG.
+check("merge.empty_source",
+      mig.merge_config(b"", _specs).count("\r"), 5)
+
 # Message bodies (SEQ, not REL) live alongside their B<n>.IDX in MSGS/.
 check("classify.board_txt", mig.classify_entry("b7.txt", "seq"),
       ("B7.TXT", "MSGS", None))
