@@ -149,12 +149,12 @@ tools/deploy-u64.sh [options]
 
 | Option | Description |
 |--------|-------------|
-| `-l, --location <loc>` | `usb0` (default), `usb1`, `sd`, `bbs` (→ `/BBS`), or a full path |
+| `-l, --location <loc>` | `usb1` (default), `usb0`, `sd`, `bbs` (→ `/BBS`), or a full path |
 | `--boards` | Also upload `data/boards-seed.d81` as `BOARDS-<ver>.D81` |
 | `-h, --help` | Show help |
 
 ```bash
-tools/deploy-u64.sh                  # deploy to /USB0/BBS/
+tools/deploy-u64.sh                  # deploy to /USB1/BBS/
 tools/deploy-u64.sh -l sd           # deploy to /SD/BBS/
 tools/deploy-u64.sh -l bbs          # deploy to /BBS/
 tools/deploy-u64.sh --boards -l bbs # also restore boards disk
@@ -206,11 +206,11 @@ only, not a way to produce a deployable tree.
 **Output layout:**
 ```
 <outdir>/CONFIG, ovl_boot.prg, BOOT-SIEC.prg, CONFIGURE-SIEC.prg
-<outdir>/SYSTEM/  other 6 overlays, USR LOG, USR PROF, ACCESS, CALLERS,
-                  T64.SIEC, all gfiles/menus/prompts
-<outdir>/MSGS/    T64.SIEC (+ USR.PTR, BOARDS, B<n>.IDX, B<n>.TXT)
-<outdir>/FILES/   T64.SIEC (+ UDS, UD<n>)
-<outdir>/DOORS/   T64.SIEC (+ DOORS)
+<outdir>/SYSTEM/  other 6 overlays, usr log.seq, usr prof.seq, access.seq,
+                  callers.seq, T64.SIEC, all gfiles/menus/prompts (*.seq)
+<outdir>/MSGS/    T64.SIEC (+ usr.ptr.seq, boards.seq, b<n>.idx.seq, b<n>.txt.seq)
+<outdir>/FILES/   T64.SIEC (+ uds.seq, ud<n>.seq)
+<outdir>/DOORS/   T64.SIEC (+ doors.seq)
 ```
 CONFIG and ovl_boot.prg must be at the root: `main()` loads `OVL_BOOT` and
 `cfg_init()` reads `CONFIG` before any section path is registered, using
