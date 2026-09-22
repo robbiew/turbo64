@@ -33,15 +33,16 @@
 #   --device <n>          SoftIEC bus id (default: 11; env T64_SIEC_DEVICE)
 #   --base <path>         Default Path on the Ultimate (default: /USB1/TURBO64;
 #                          env T64_SIEC_BASE)
-#   --clean               Before uploading, remove stale files under --base
-#                          that are not part of this deploy — old BOOT/ovl
-#                          binaries, src-diag/ diagnostics, probe scratch
-#                          (PERF.DAT*, SP1*, STRAND/), and any *.seq whose
-#                          stripped name collides with a file this deploy
-#                          writes (see NOTES below for why that collision is
-#                          dangerous on SoftIEC). User/message/file-area data
-#                          is never touched — see tools/siec_clean.py for the
-#                          exact classification rules. A dry run (no
+#   --clean               Before uploading, tidy the tree under --base: remove
+#                          old BOOT/ovl binaries, src-diag/ diagnostics and
+#                          probe scratch (PERF.DAT*, SP1*, STRAND/); RENAME
+#                          data files an older migrator wrote without the
+#                          .seq extension (USR LOG -> usr log.seq, ...) to the
+#                          spelling the C64 itself uses, since they are the
+#                          live data; and STOP if a file and its .seq twin are
+#                          both present (a conflict only the SysOp can settle).
+#                          User/message/file-area data is never deleted — see
+#                          tools/siec_clean.py for the exact rules. A dry run (no
 #                          --execute) prints the rules and the local deploy
 #                          manifest only, making NO network calls, same as
 #                          every other c64u invocation in this script. With
@@ -54,15 +55,16 @@
 #                          leftovers and upload failures.
 #   --yes                  Skip --clean's interactive delete confirmation.
 #                           Ignored without --clean.
-#   --keep-data            Do not upload a data file (user database, boards,
+#   --reset-data           Upload the seed's data files (user database, boards,
 #                          message index/bodies, file areas, doors, counters)
-#                          that already exists on the device. Binaries,
-#                          overlays, gfiles and CONFIG are still refreshed.
-#                          This is the "update a live install" mode: without
-#                          it a redeploy resets users and boards to the seed.
-#                          Needs --execute to look at the device; a dry run
-#                          just says so. Which names count as data is
-#                          siec_clean.py's protected set.
+#                          OVER ones already on the device. By default those
+#                          are left alone and only binaries, overlays, gfiles
+#                          and CONFIG are refreshed, so a redeploy updates a
+#                          live install without resetting it to the seed.
+#                          Which names count as data is siec_clean.py's
+#                          protected set. (--keep-data, the default, is still
+#                          accepted.) A dry run cannot see the device, so it
+#                          uploads everything in its printout.
 #
 # uiec options:
 #   --uiec-device <n>     Physical drive's device number (default: 10; env
@@ -145,7 +147,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 show_help() {
-    sed -n '2,131p' "$0"
+    sed -n '2,135p' "$0"
 }
 
 TARGET="${1:-}"
@@ -156,7 +158,7 @@ LAUNCH=0
 BUILD=1
 CLEAN=0
 CLEAN_YES=0
-KEEP_DATA=0
+KEEP_DATA=1
 VERIFY_FAILED=0
 D81_SEED="$ROOT/data/users-seed.d81"
 D81_DRIVE="a"
@@ -171,7 +173,8 @@ while [[ $# -gt 0 ]]; do
         --no-build)     BUILD=0; shift ;;
         --clean)        CLEAN=1; shift ;;
         --yes)          CLEAN_YES=1; shift ;;
-        --keep-data)    KEEP_DATA=1; shift ;;
+        --keep-data)    KEEP_DATA=1; shift ;;   # the default; kept for scripts
+        --reset-data)   KEEP_DATA=0; shift ;;
         --seed)         D81_SEED="$2"; shift 2 ;;
         --drive)        D81_DRIVE="$2"; shift 2 ;;
         --device)       SIEC_DEVICE="$2"; shift 2 ;;
@@ -188,10 +191,6 @@ case "$TARGET" in
     *) echo "Unknown target: $TARGET (expected d81, siec, or uiec)" >&2; exit 1 ;;
 esac
 
-if [ "$KEEP_DATA" -eq 1 ] && [ "$TARGET" != "siec" ]; then
-    echo "ERROR: --keep-data is only supported for the siec target." >&2
-    exit 1
-fi
 
 if [ "$CLEAN" -eq 1 ] && [ "$TARGET" != "siec" ]; then
     echo "ERROR: --clean is only supported for the siec target (d81 replaces the" >&2
@@ -542,8 +541,10 @@ siec_clean_pass() {
         echo "  REMOVE  known src-diag/ diagnostic PRGs: SIECPROBE SEQTEST SEQNAME USRREAD"
         echo "          USRSWEEP CFGREAD PTEST RELTEST CPTEST DIR EXISTS CLEAN WIPE COPYALL"
         echo "  REMOVE  probe scratch: PERF.DAT*, SP1*, and the STRAND/ fixture directory"
-        echo "  REMOVE  any file that answers to the same CBM name as one this deploy writes"
-        echo "          (case-insensitive, .seq marker ignored: a stale CALLERS beside callers.seq)"
+        echo "  RENAME  an old-migrator data file (extensionless USR LOG, CALLERS, ...) to the"
+        echo "          .seq spelling this deploy uses — it IS the live data, so it is kept"
+        echo "  STOP    on a CONFLICT: an extensionless file AND its .seq twin both present"
+        echo "  REMOVE  a stale .seq shadow of a non-data file this deploy rewrites (CONFIG)"
         echo "  KEEP    USR LOG, USR PROF, ACCESS, CALLERS, syscnt*, USR.PTR*, USR.DAY*,"
         echo "          BOARDS*, B<n>.IDX*, B<n>.TXT*, UDS*, UD<n>*, VOTE1*, DOORS*, T64.SIEC"
         echo "  KEEP    every file this deploy is about to write ($(wc -l <"$manifest" | tr -d ' ') files)"
@@ -562,14 +563,26 @@ siec_clean_pass() {
     done < <(siec_fetch_listings "$work")
 
     removals="$work/removals.txt"
+    local renames="$work/renames.txt"
     if ! python3 "$ROOT/tools/siec_clean.py" classify \
             --manifest "$manifest" --base "$SIEC_BASE" \
-            "${listing_args[@]}" --emit-removals "$removals"; then
-        echo -e "${RED}ERROR: --clean classification failed (see above) — aborting" \
-                 "without deleting anything.${NC}" >&2
+            "${listing_args[@]}" --emit-removals "$removals" \
+            --emit-renames "$renames"; then
+        echo -e "${RED}ERROR: --clean found a CONFLICT or failed (see above) — aborting" \
+                 "before uploading anything.${NC}" >&2
         exit 1
     fi
     echo ""
+
+    # Renames first: an old-migrator data file becomes the deploy's own
+    # ".seq" name, so the upload loop (with --keep-data) then sees it as
+    # existing and leaves it alone. No confirmation — nothing is lost.
+    if [ -s "$renames" ]; then
+        while IFS=$'\t' read -r old new; do
+            run_c64u fs mv "$old" "$new"
+        done <"$renames"
+        echo ""
+    fi
 
     if [ ! -s "$removals" ]; then
         echo -e "${GREEN}--clean: nothing to remove.${NC}"
@@ -715,7 +728,7 @@ deploy_siec() {
     while IFS= read -r -d '' f; do
         local rel="${f#"$tree"/}"
         if [ -n "$skip" ] && printf '%s\n' "$skip" | grep -qxF "$rel"; then
-            echo "  keep-data: not uploading $rel (exists on device)"
+            echo "  keeping device copy of $rel (pass --reset-data to overwrite with the seed)"
             continue
         fi
         run_c64u fs upload "$f" "$SIEC_BASE/$rel"

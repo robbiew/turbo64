@@ -5,7 +5,7 @@ Non-destructive: reads the image, writes a new directory. The source .d81 is
 never modified, so a failed run loses nothing.
 
 Produces the layout verified on hardware:
-    <outdir>/         CONFIG, ovl_boot.prg, BOOT-SIEC.prg, CONFIGURE-SIEC.prg
+    <outdir>/         config.seq, ovl_boot.prg, BOOT-SIEC.prg, CONFIGURE-SIEC.prg
     <outdir>/SYSTEM/  the other six overlays, usr log.seq, usr prof.seq,
                       access.seq, callers.seq, T64.SIEC, all gfiles/menus/prompts
     <outdir>/MSGS/    T64.SIEC (+ usr.ptr.seq, boards.seq, b<n>.idx.seq, b<n>.txt.seq)
@@ -300,8 +300,12 @@ def merge_config(source_bytes, specs):
 
 
 def write_config(outdir, specs, source_bytes=b""):
-    """Write CONFIG at the tree ROOT (never SYSTEM/ — see module docstring)."""
-    with open(os.path.join(outdir, "CONFIG"), "w", newline="") as f:
+    """Write the config at the tree ROOT (never SYSTEM/ — see module docstring)."""
+    # "config.seq", not "CONFIG": the C64 writes lowercase <name>.seq, and an
+    # extensionless copy beside it would shadow every save (same measured
+    # trap as the data files — see host_name()). SoftIEC resolves "CONFIG"
+    # to config.seq on read.
+    with open(os.path.join(outdir, host_name("CONFIG")), "w", newline="") as f:
         f.write(merge_config(source_bytes, specs))
 
 

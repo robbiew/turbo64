@@ -70,6 +70,7 @@ fi
 
 if command -v python3 >/dev/null 2>&1; then
     python3 "$ROOT/tests/test_migrate_d81.py" || fails=1
+    python3 "$ROOT/tests/test_siec_clean.py" || fails=1
 else
     echo "python3 not found - skipping migrate-d81 tests"
 fi

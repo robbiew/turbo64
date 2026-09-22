@@ -131,9 +131,10 @@ with tempfile.TemporaryDirectory() as td:
     }
     os.makedirs(os.path.join(td, "SYSTEM"))
     mig.write_config(td, specs)
-    check("config.at_root", os.path.isfile(os.path.join(td, "CONFIG")), True)
+    check("config.at_root", os.path.isfile(os.path.join(td, "config.seq")), True)
+    check("config.not_extensionless", os.path.isfile(os.path.join(td, "CONFIG")), False)
     check("config.not_in_system",
-          os.path.isfile(os.path.join(td, "SYSTEM", "CONFIG")), False)
+          os.path.isfile(os.path.join(td, "SYSTEM", "config.seq")), False)
 
 
 # --- a missing overlay or binary is reported, not silently skipped --------
