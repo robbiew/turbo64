@@ -33,6 +33,12 @@
  * bounds-check themselves. */
 #define CFG_SECTION_COUNT  5
 
+/* T64_STORE_SEQ only: a pseudo-section for disk_select_partition() meaning
+ * "the tree root" — where cfg_init() reads CONFIG from before any section
+ * exists, and therefore where cfg_save() must write it. Not an index into
+ * the section arrays. */
+#define CFG_SECTION_ROOT   0xFE
+
 /** Modem carrier-detection mode.
  *  AUTO: probe for U64 UCI support at boot; use U64 if present, otherwise VICE.
  *  VICE: force AT-string mode (VICE/tcpser — DSR line is meaningless).

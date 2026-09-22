@@ -151,6 +151,13 @@ bbs_err_t disk_select_partition(u8 device, u8 partition)
     char cmd[28];
     const char *path;
 
+    /* The tree root is not a section: CD there via the same derivation the
+     * exit path uses. disk_cmd() invalidates the cache, so the next real
+     * section select re-issues its CD instead of trusting a stale entry. */
+    if (partition == CFG_SECTION_ROOT) {
+        disk_reset_cursor_root(device);
+        return BBS_OK;
+    }
     if (partition >= CFG_SECTION_COUNT) return BBS_EIO;
     path = s_section_path[partition];
     if (!path || path[0] == '\0') return BBS_OK;
