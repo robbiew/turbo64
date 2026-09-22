@@ -149,12 +149,12 @@ tools/deploy-u64.sh [options]
 
 | Option | Description |
 |--------|-------------|
-| `-l, --location <loc>` | `usb0` (default), `usb1`, `sd`, `bbs` (→ `/BBS`), or a full path |
+| `-l, --location <loc>` | `usb1` (default), `usb0`, `sd`, `bbs` (→ `/BBS`), or a full path |
 | `--boards` | Also upload `data/boards-seed.d81` as `BOARDS-<ver>.D81` |
 | `-h, --help` | Show help |
 
 ```bash
-tools/deploy-u64.sh                  # deploy to /USB0/BBS/
+tools/deploy-u64.sh                  # deploy to /USB1/BBS/
 tools/deploy-u64.sh -l sd           # deploy to /SD/BBS/
 tools/deploy-u64.sh -l bbs          # deploy to /BBS/
 tools/deploy-u64.sh --boards -l bbs # also restore boards disk
@@ -170,6 +170,107 @@ RUN
 **Requires:** `vendor/c64u/bin/c64u` — run `tools/install-c64u.sh` if missing.
 
 **Environment:** `T64_SD_PATH` overrides default path.
+
+---
+
+### `migrate-d81.py` — Convert a .d81 to the SoftIEC Folder Tree
+
+Reads a seeded `.d81` and writes the flat SEQ folder tree the SoftIEC
+(`T64_STORE_SEQ`) build reads: REL sets trimmed and converted to SEQ, ACCESS/
+CALLERS/gfiles/menus/prompts copied over, and the SIEC binaries (`ovl_*.prg`,
+`BOOT-SIEC.prg`, `CONFIGURE-SIEC.prg`) copied in from `build/c64/siec/`.
+Non-destructive — the source `.d81` is never modified. `BOOT-SIEC.prg` /
+`CONFIGURE-SIEC.prg` are fixed, version-independent names — see
+[the naming rationale](../README.md#which-build-do-i-want).
+
+```bash
+python3 tools/migrate-d81.py <image.d81> <outdir> [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--base <path>` | SoftIEC Default Path the tree will live at (default: `/USB1/TURBO64`) |
+| `--device <n>` | SoftIEC bus id written into `CONFIG` (default: `11`) |
+| `--siec-build-dir <path>` | Where `make c64-siec` put its output (default: `build/c64/siec`) |
+| `--allow-incomplete` | Write the tree even if a SIEC binary is missing (will not boot) |
+| `--c1541 <path>` | Override the `c1541` tool (env `C1541`) |
+
+By default the tool **fails loudly** (exit 1) if any overlay, `BOOT-SIEC.prg`,
+or `CONFIGURE-SIEC.prg` is missing from `--siec-build-dir`, printing
+`make c64-siec && make editor-siec` as the fix — a tree that looks complete
+but is missing a boot artifact (or has no way to run the SysOp editor) fails
+silently on hardware, which is the exact trap this tool exists to close.
+`--allow-incomplete` is an explicit opt-out for inspecting the data layout
+only, not a way to produce a deployable tree.
+
+**Output layout:**
+```
+<outdir>/config.seq, ovl_boot.prg, BOOT-SIEC.prg, CONFIGURE-SIEC.prg
+<outdir>/SYSTEM/  other 6 overlays, usr log.seq, usr prof.seq, access.seq,
+                  callers.seq, T64.SIEC, all gfiles/menus/prompts (*.seq)
+<outdir>/MSGS/    T64.SIEC (+ usr.ptr.seq, boards.seq, b<n>.idx.seq, b<n>.txt.seq)
+<outdir>/FILES/   T64.SIEC (+ uds.seq, ud<n>.seq)
+<outdir>/DOORS/   T64.SIEC (+ doors.seq)
+```
+CONFIG and ovl_boot.prg must be at the root: `main()` loads `OVL_BOOT` and
+`cfg_init()` reads `CONFIG` before any section path is registered, using
+whatever directory the KERNAL cursor is already in.
+
+---
+
+### `deploy.sh` — Build, Deploy, and Launch to Any Test Target
+
+One command to build, deploy, and (best-effort) launch against any of the
+three test targets: `d81` (device 8, emulated 1581), `siec` (device 11,
+SoftIEC folder tree), `uiec` (device 10, physical uIEC/sd2iec — staged via
+device 8 and driven through `COPYALL`, since its media is not network
+reachable).
+
+```bash
+tools/deploy.sh <d81|siec|uiec> [options]
+```
+
+**Safe by default:** every `c64u` call is printed, not executed, unless
+`--execute` is passed. Review the printed commands before pointing this at
+real hardware.
+
+| Option | Description |
+|--------|-------------|
+| `--execute` | Actually run the `c64u` / upload calls (default: dry run) |
+| `--launch` | Best-effort launch after deploying (see script header for per-target reliability notes — `siec` in particular is not reliable; the exact manual boot commands are always printed) |
+| `--no-build` | Skip the `make` step |
+| `--seed <d81>` | (d81/uiec) seed disk for the user DB (default: `data/users-seed.d81`) |
+| `--drive <a\|b>` | (d81/uiec) internal drive slot |
+| `--device <n>` / `--base <path>` | (siec) SoftIEC bus id / Default Path (env `T64_SIEC_DEVICE` / `T64_SIEC_BASE`) |
+| `--clean` | (siec only) tidy `--base` before uploading: remove old BOOT/ovl binaries, `src-diag/` diagnostics and probe scratch; **rename** data files an older migrator wrote without `.seq` to the spelling the C64 uses (they are the live data); **stop** if a file and its `.seq` twin are both present (see below) |
+| `--yes` | Skip `--clean`'s interactive delete confirmation |
+| `--reset-data` | (siec only) upload the seed's data files (user database, boards, message index/bodies, file areas, doors, counters) **over** ones already on the device. By default they are left alone and only binaries, overlays, gfiles and the config are refreshed, so a redeploy updates a live install without resetting it |
+
+Run `tools/deploy.sh --help` for the full per-target breakdown, including
+why `c64u runners run-prg` cannot launch the `siec` target at all (it
+forces device 8 and truncates the path).
+
+**`--clean` (siec only):** SoftIEC derives the CBM filename by stripping a
+host-side type-marker extension and ignores case, so `CALLERS` beside
+`callers.seq` presents the SAME CBM name. Measured on hardware (C64 Ultimate,
+firmware 1.1.0): the C64 always *writes* lowercase `<name>.seq`; an
+extensionless file only ever comes from the PC; with both present the C64
+*reads* the extensionless one and a scratch removes both. So on a tree the
+older migrator wrote, the extensionless `USR LOG` is the live user database.
+`--clean` therefore never deletes a data file: it renames the old spelling to
+the `.seq` one, and if both spellings of one file are present it reports a
+CONFLICT and stops before uploading anything. `migrate-d81.py` itself now
+writes every data file (and `config.seq`) in the `.seq` spelling.
+`--clean` classifies (via `tools/siec_clean.py`)
+everything currently under `--base` as safe-to-remove or must-keep, and
+defaults to keeping: anything not positively matched by a remove rule is
+reported unrecognized and left alone. User/message/file-area data (`USR
+LOG`, `ACCESS`, `BOARDS*`, `UDS*`, ...) is never touched. A dry run makes
+no network calls — it only prints the rules and the local manifest; pass
+`--execute` to fetch the live listing, see exact per-file decisions, and
+(after typed confirmation, or `--yes`) delete. After uploading, it re-lists
+the tree and diffs it against the manifest to catch both leftovers and
+upload failures.
 
 ---
 
@@ -309,7 +410,10 @@ tools/release.sh --force      # delete existing release and recreate from scratc
 | `VICE_CMD` | `x64sc` | `deploy-vice.sh`, `build.sh` |
 | `TCPSER_CMD` | `tcpser` | `deploy-vice.sh` |
 | `T64_SD_PATH` | (none) | `deploy-u64.sh`, `fetch-u64.sh`, `extract-users.sh`, `extract-boards.sh` |
-| `C1541` | `c1541` | `assemble-d81.sh`, `extract-boards.sh` |
+| `C1541` | `c1541` | `assemble-d81.sh`, `extract-boards.sh`, `migrate-d81.py` |
+| `T64_SIEC_DEVICE` | `11` | `deploy.sh` |
+| `T64_SIEC_BASE` | `/USB1/TURBO64` | `deploy.sh` |
+| `T64_UIEC_DEVICE` | `10` | `deploy.sh` (informational — see script header) |
 
 ---
 
@@ -318,10 +422,13 @@ tools/release.sh --force      # delete existing release and recreate from scratc
 ```
 build/c64/
 ├── TURBO64-<ver>.d81          assembled BBS disk image
-├── BOOT-<ver>.prg        main BBS runtime
-├── CONFIGURE-<ver>.prg   SysOp editor
-├── ovl_msgs.prg          message module overlay (loaded on demand)
-└── ovl_wfc.prg           WFC display overlay (loaded on demand)
+├── BOOT-<ver>.prg        main BBS runtime (REL backend)
+├── CONFIGURE-<ver>.prg   SysOp editor (REL backend)
+├── ovl_*.prg             REL overlays (msgs, wfc, boot, doors, files, zmodem, auth)
+└── siec/                 SoftIEC (T64_STORE_SEQ) build — own dir so its
+    ├── BOOT-SIEC.prg          fixed, version-independent names (same-named
+    ├── CONFIGURE-SIEC.prg     overlays never collide with the REL set above
+    └── ovl_*.prg              — see `make c64-siec` / `make editor-siec`)
 
 data/
 ├── users-seed.d81        user database snapshot (from extract-users.sh)
@@ -347,6 +454,8 @@ build/release/
 | `deploy-vice.sh` | Launch VICE with modem bridge and RTC cartridge |
 | `assemble-d81.sh` | Assemble bootable D8 disk image |
 | `deploy-u64.sh` | Upload BBS (and optionally boards) disk to U64 |
+| `deploy.sh` | Build + deploy + best-effort launch to d81 / siec / uiec |
+| `migrate-d81.py` | Convert a seeded `.d81` into the SoftIEC folder tree |
 | `fetch-u64.sh` | Download live BBS disk from U64 |
 | `extract-users.sh` | Snapshot user database from U64 |
 | `extract-boards.sh` | Snapshot boards disk from U64 |

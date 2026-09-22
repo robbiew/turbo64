@@ -123,16 +123,32 @@ bbs_err_t msg_index_get(u8 board_id, u16 msg_id,
                          msg_index_record_t *out, u8 device)
 {
     rel_handle_t h;
+    /* err/got/buf alias the shared rel_scratch under T64_STORE_SEQ — see the
+     * comment on rel_scratch_buf/got/err in bbs/rel.h. (Renamed from
+     * s_msg_buf, which read as a static but never was one — same rename
+     * applied to msg_index_put/msg_index_stats below, unconditionally,
+     * since it was misleading regardless of backend.) */
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define got rel_scratch_got
+#define buf rel_scratch_buf
+#else
     bbs_err_t err;
     u8 got;
-    u8 s_msg_buf[RECORD_SIZE_MSG_IDX];
+    u8 buf[RECORD_SIZE_MSG_IDX];
+#endif
 
     if (!out || msg_id == 0 || board_id == 0) return BBS_EBADARG;
 
+#ifndef T64_STORE_SEQ
+    /* Under T64_STORE_SEQ this cache is redundant: rel_open() already loads
+     * B<n>.IDX into REU (the WINDOW region in bank 2) and rel_read() is
+     * itself a DMA read, so the fallback below costs nothing extra there. */
     if (bbs_cfg.reu_enabled) {
         reu_index_get(msg_id, out);
         return BBS_OK;
     }
+#endif
 
     err = msg_open_idx(board_id, device, &h);
     if (err != BBS_OK) return err;
@@ -140,18 +156,23 @@ bbs_err_t msg_index_get(u8 board_id, u16 msg_id,
     err = rel_position(h, (u16)msg_id);
     if (err != BBS_OK) { rel_close(h); return err; }
 
-    memset(s_msg_buf, 0, RECORD_SIZE_MSG_IDX);
-    err = rel_read(h, (void *)s_msg_buf, RECORD_SIZE_MSG_IDX, &got);
+    memset(buf, 0, RECORD_SIZE_MSG_IDX);
+    err = rel_read(h, (void *)buf, RECORD_SIZE_MSG_IDX, &got);
     rel_close(h);
 
     if (err != BBS_OK) return err;
     if (got < RECORD_READ_MIN) return BBS_EIO;
     if (got < RECORD_SIZE_MSG_IDX)
-        memset(s_msg_buf + got, 0, RECORD_SIZE_MSG_IDX - got);
+        memset(buf + got, 0, RECORD_SIZE_MSG_IDX - got);
 
-    msg_unpack(out, s_msg_buf);
+    msg_unpack(out, buf);
     return BBS_OK;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef got
+#undef buf
+#endif
 
 static void msg_row_from_rec(msg_list_row_t *row, const msg_index_record_t *rec)
 {
@@ -179,6 +200,7 @@ u8 msg_index_page(u8 board_id, u16 first_id, u8 max_rows,
 
     if (!out || board_id == 0 || first_id == 0 || max_rows == 0) return 0;
 
+#ifndef T64_STORE_SEQ
     if (bbs_cfg.reu_enabled) {
         while (filled < max_rows &&
                (u16)(first_id + filled) <= CFG_MSG_MAX_PER_BOARD) {
@@ -189,6 +211,7 @@ u8 msg_index_page(u8 board_id, u16 first_id, u8 max_rows,
         }
         return filled;
     }
+#endif
 
     err = msg_open_idx(board_id, device, &h);
     if (err != BBS_OK) return 0;
@@ -219,7 +242,7 @@ bbs_err_t msg_index_stats(u8 board_id, u8 device, u16 *out_total, u16 *out_delet
     rel_handle_t h;
     bbs_err_t err;
     u8 got;
-    u8 s_msg_buf[RECORD_SIZE_MSG_IDX];
+    u8 buf[RECORD_SIZE_MSG_IDX];
     msg_index_record_t rec;
     u16 idx, total = 0, deleted = 0;
 
@@ -230,12 +253,12 @@ bbs_err_t msg_index_stats(u8 board_id, u8 device, u16 *out_total, u16 *out_delet
 
     rel_position(h, 1);
     for (idx = 1; idx <= CFG_MSG_MAX_PER_BOARD; idx++) {
-        memset(s_msg_buf, 0, RECORD_SIZE_MSG_IDX);
-        err = rel_read(h, (void *)s_msg_buf, RECORD_SIZE_MSG_IDX, &got);
+        memset(buf, 0, RECORD_SIZE_MSG_IDX);
+        err = rel_read(h, (void *)buf, RECORD_SIZE_MSG_IDX, &got);
         if (err != BBS_OK || got < RECORD_READ_MIN) break;   /* past last record */
         if (got < RECORD_SIZE_MSG_IDX)
-            memset(s_msg_buf + got, 0, RECORD_SIZE_MSG_IDX - got);
-        msg_unpack(&rec, s_msg_buf);
+            memset(buf + got, 0, RECORD_SIZE_MSG_IDX - got);
+        msg_unpack(&rec, buf);
         total++;
         if (rec.flags & MSG_F_DELETED) deleted++;
     }
@@ -249,8 +272,13 @@ bbs_err_t msg_index_stats(u8 board_id, u8 device, u16 *out_total, u16 *out_delet
 bbs_err_t msg_index_put(u8 board_id, const msg_index_record_t *rec, u8 device)
 {
     rel_handle_t h;
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define buf rel_scratch_buf
+#else
     bbs_err_t err;
-    u8 s_msg_buf[RECORD_SIZE_MSG_IDX];
+    u8 buf[RECORD_SIZE_MSG_IDX];
+#endif
 
     if (!rec || rec->msg_id == 0 || board_id == 0) return BBS_EBADARG;
 
@@ -261,19 +289,28 @@ bbs_err_t msg_index_put(u8 board_id, const msg_index_record_t *rec, u8 device)
     err = rel_position(h, (u16)rec->msg_id);
     if (err != BBS_OK) { rel_close(h); return err; }
 
-    msg_pack(rec, s_msg_buf);
-    err = rel_write(h, (const void *)s_msg_buf, RECORD_SIZE_MSG_IDX);
-    rel_close(h);
+    msg_pack(rec, buf);
+    err = rel_write(h, (const void *)buf, RECORD_SIZE_MSG_IDX);
+    err = rel_close_keep(h, err);
 
     if (err != BBS_OK) return err;
 
-    /* Also update REU if enabled */
+#ifndef T64_STORE_SEQ
+    /* Also update REU if enabled. Under T64_STORE_SEQ this is redundant:
+     * the rel_write() above already updated the WINDOW region in REU bank 2,
+     * which is the authoritative cache there — bank 0 would just be a
+     * second copy of the same data. */
     if (bbs_cfg.reu_enabled) {
         reu_index_put(rec->msg_id, rec);
     }
+#endif
 
     return BBS_OK;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef buf
+#endif
 
 /* ---- Scan visitor pattern ----------------------------------------- */
 
@@ -407,9 +444,11 @@ u8 msg_scan_new(u8 board_id, u16 hwm, u16 last_call_date,
                  u16 *out_ids, u8 max_ids, u8 device)
 {
     scan_new_ctx_t ctx;
+#ifndef T64_STORE_SEQ
     // cppcheck-suppress variableScope
     u16 rec_num;
     msg_index_record_t rec;
+#endif
 
     ctx.hwm = hwm;
     ctx.last_call_date = last_call_date;
@@ -417,6 +456,7 @@ u8 msg_scan_new(u8 board_id, u16 hwm, u16 last_call_date,
     ctx.max_ids = max_ids;
     ctx.found = 0;
 
+#ifndef T64_STORE_SEQ
     if (bbs_cfg.reu_enabled) {
         for (rec_num = 1; rec_num <= CFG_MSG_MAX_PER_BOARD; rec_num++) {
             reu_index_get(rec_num, &rec);
@@ -432,6 +472,7 @@ u8 msg_scan_new(u8 board_id, u16 hwm, u16 last_call_date,
         }
         return ctx.found;
     }
+#endif
 
     msg_scan_all(board_id, device, scan_new_visitor, &ctx);
     return ctx.found;

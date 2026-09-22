@@ -20,6 +20,11 @@
  * via disk_select_partition() (the "CP<n>" command channel command) before
  * the filename is opened — see disk_select_partition() for why.
  *
+ * In T64_STORE_SEQ builds `drive` is instead a SECTION INDEX (0=system,
+ * 1=msgs, 2=files, 3=doors, 4=gfiles) and disk_select_partition() issues an absolute
+ * "CD:<path>" rather than "CP<n>". Every caller passes the same value in
+ * both builds; only the resolution changes.
+ *
  * REL file access is handled by bbs/rel.h, not this module.
  */
 #ifndef BBS_HAL_DISK_H
@@ -65,6 +70,11 @@ i16 disk_gets(char *buf, u8 len);
 /* Write one byte. Returns BBS_OK or BBS_EIO. */
 bbs_err_t disk_putc(char c);
 
+/* Write up to `len` raw bytes from buf. Returns BBS_OK or BBS_EIO.
+ * Uses krnio_write() — one CHKOUT + N×CHROUT + one CLRCHN per call.
+ * Much faster than disk_putc() for bulk sequential writes. */
+bbs_err_t disk_write(const u8 *buf, u8 len);
+
 /* Write NUL-terminated string. Returns BBS_OK or BBS_EIO. */
 bbs_err_t disk_puts(const char *s);
 
@@ -88,13 +98,53 @@ bbs_err_t disk_rename(u8 device, u8 drive,
 /* Send a raw command string to the drive command channel (e.g. "I0"). */
 bbs_err_t disk_cmd(u8 device, const char *cmd);
 
-/* Select drive partition `partition` on `device` via the "CP<n>" command
- * channel command. Partitions are persistent drive state (not filename
- * state), so this must be called before any filename that assumes a given
- * partition is current. Caches the last selected (device, partition) pair
- * and is a no-op when already selected. `partition == 0` always sends
- * nothing (see disk.c for why). */
+/* Select the storage location `partition` addresses on `device`. Partitions
+ * are persistent drive state (not filename state), so this must be called
+ * before any filename that assumes a given partition is current. Caches the
+ * last selected (device, partition) pair and is a no-op when already
+ * selected. The command sent, and what `partition == 0` means, differ by
+ * build:
+ *
+ * REL (default) build: `partition` is a CP<n> drive partition, sent via the
+ * "CP<n>" command channel command. `partition == 0` always sends nothing —
+ * see disk.c for why that must stay byte-for-byte quiet.
+ *
+ * T64_STORE_SEQ build: `partition` is a SECTION INDEX (0=system, 1=msgs,
+ * 2=files, 3=doors, 4=gfiles) and this issues an absolute "CD:<path>" to the
+ * folder registered for that index via disk_set_section_path(). 0 (system)
+ * is an ordinary section like any other, not a no-op case; this sends
+ * nothing only when the index has no path registered yet (e.g. before
+ * cfg_init() has run). */
 bbs_err_t disk_select_partition(u8 device, u8 partition);
+
+/* Load an overlay PRG (a P"OVL_..." literal) from bbs_cfg.device_system,
+ * positioning the drive cursor at the system section first under
+ * T64_STORE_SEQ (a no-op in the REL build). See disk.c for the full
+ * rationale. Returns BBS_EIO if positioning or the load fails — callers
+ * must not run into the overlay region in that case. */
+bbs_err_t disk_load_overlay(const char *name);
+
+#ifdef T64_STORE_SEQ
+/* Register the absolute folder path for section `index` (0=system, 1=msgs,
+ * 2=files, 3=doors, 4=gfiles). Stores the POINTER — the caller must keep the string
+ * alive for the lifetime of the program (bbs_cfg does). Called once per
+ * section after config load. */
+void disk_set_section_path(u8 index, const char *path);
+#endif
+
+/* Restore the drive's persistent navigation cursor to "home" — wherever the
+ * install's own binaries live — before the process exits. See disk.c for
+ * why every disk-touching exit path needs this and what "home" resolves to
+ * in each build:
+ *   T64_STORE_SEQ  — the section tree root (bbs_cfg.init_system with its
+ *                    last /-component stripped). No-op if init_system has no
+ *                    parent component (e.g. cfg_init() hasn't run yet).
+ *   REL (default)  — bbs_cfg.drive_system, via disk_select_partition(). A
+ *                    correct no-op both pre-cfg_init() (drive_system is
+ *                    still its zero default) and for a legitimate
+ *                    partition-0 install (disk_select_partition() already
+ *                    sends nothing for partition 0 — see its comment). */
+void disk_reset_cursor_root(u8 device);
 
 /* Read drive status into disk_errmsg. Returns numeric error code (0=OK). */
 u8 disk_status(u8 device);

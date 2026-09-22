@@ -14,7 +14,7 @@ int main(void)
     u16 n = 0;
     int c;
     char line[42];
-    u8 col = 0;
+    bool_t stop = FALSE;
 
     printf("\x93\x8e");
     printf("DIR OF DEV/PART\n");
@@ -37,19 +37,45 @@ int main(void)
         printf("DIR OPEN FAILED\n"); printf("\nDONE.\n"); getch(); return 0;
     }
     line[0] = 0;
-    while (n < 3000) {
-        int v = krnio_getch(CFG_FNUM_DATA);
-        char ch;
-        if (v < 0) break;
-        n++;
-        ch = (char)(v & 0xFF);
-        if (ch >= 0x20 && ch < 0x7F) {
-            if (col < 39) line[col++] = ch;
-        } else if (ch == 0 && col > 0) {
-            line[col] = 0;
-            if (col > 2) printf("%s\n", line);
-            col = 0;
+
+    /* Parse the directory as the BASIC-program image it actually is, rather
+       than filtering for printable bytes: each entry is link(2) + a 16-bit
+       BASIC line number that IS the block count + text + NUL. The old
+       printable-only filter dropped that word by construction, so every
+       count — including the trailing "BLOCKS FREE" total — was invisible.
+       That total is usually the number you came here for. */
+    (void)krnio_getch(CFG_FNUM_DATA);   /* load address lo */
+    (void)krnio_getch(CFG_FNUM_DATA);   /* load address hi */
+    n = 2;
+
+    while (!stop && n < 8000) {
+        int l0 = krnio_getch(CFG_FNUM_DATA);
+        int l1 = krnio_getch(CFG_FNUM_DATA);
+        int b0, b1;
+        u16 blocks;
+        u8 col;
+        if (l0 < 0 || l1 < 0) break;
+        n += 2;
+        if ((l0 | l1) == 0) break;      /* null link = end of directory */
+
+        b0 = krnio_getch(CFG_FNUM_DATA);
+        b1 = krnio_getch(CFG_FNUM_DATA);
+        if (b0 < 0 || b1 < 0) break;
+        n += 2;
+        blocks = (u16)((b0 & 0xFF) | ((b1 & 0xFF) << 8));
+
+        col = 0;
+        for (;;) {
+            int v = krnio_getch(CFG_FNUM_DATA);
+            char ch;
+            if (v < 0) { stop = TRUE; break; }
+            n++;
+            ch = (char)(v & 0xFF);
+            if (ch == 0) break;
+            if (ch >= 0x20 && ch < 0x7F && col < 39) line[col++] = ch;
         }
+        line[col] = 0;
+        printf("%-5u %s\n", (unsigned)blocks, line);
     }
     krnio_clrchn();
     krnio_close(CFG_FNUM_DATA);

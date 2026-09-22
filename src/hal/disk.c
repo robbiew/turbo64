@@ -1,6 +1,7 @@
 /* CBM IEC sequential disk I/O using oscar64 kernalio. */
 #include "bbs/hal/disk.h"
 #include "bbs/config.h"
+#include "bbs/cfg.h"
 #include <c64/kernalio.h>
 #include <string.h>
 
@@ -35,8 +36,155 @@ static u8 s_open_device = 0;
 static u8 s_part_device    = 0xFF;
 static u8 s_part_partition = 0;
 
+#ifdef T64_STORE_SEQ
+/* Absolute folder path per section, registered by disk_set_section_path()
+ * once cfg_init() has read CONFIG. Pointers only — see disk.h. */
+static const char *s_section_path[CFG_SECTION_COUNT] = { 0, 0, 0, 0, 0 };
+
+/* Marker-file arrival check runs once per section, the first time its
+ * folder is selected. CD: to a wrong/missing folder returns DOS status 0
+ * (measured on hardware) and silently leaves the cursor where it was, so
+ * there is no error to catch at the CD: layer itself — only opening a file
+ * known to live in the real folder and reading its DOS status proves the
+ * folder is correct. 62 = file not found is the only trustworthy signal;
+ * disk_open() returning BBS_OK is not (KERNAL OPEN succeeds on any device
+ * that answers, regardless of whether the file exists). */
+static bool_t s_section_verified[CFG_SECTION_COUNT] = { FALSE, FALSE, FALSE, FALSE, FALSE };
+
+/* Last folder path actually CD:'d to, alongside the device it was sent on.
+ * gfiles commonly share the system folder (a different section index,
+ * same path) — without this every gfile read issued a redundant CD:
+ * because the cache above keys on section index, not resolved path. */
+static const char *s_last_path = 0;
+
+void disk_set_section_path(u8 index, const char *path)
+{
+    if (index < CFG_SECTION_COUNT) s_section_path[index] = path;
+}
+
+/* Opens the marker directly through krnio rather than disk_open(): the
+ * partition is already current, so going through the public open path
+ * would recurse back into disk_select_partition() for no benefit and cost
+ * scarce resident code space. */
+static bbs_err_t disk_verify_section_marker(u8 device)
+{
+    u8 status;
+
+    krnio_setnam("0:T64.SIEC,S,R");
+    krnio_open(CFG_FNUM_DATA, device, 2);
+    krnio_close(CFG_FNUM_DATA);
+    status = disk_status(device);
+    /* Any DOS error, not just 62: a device that is absent, a wrong file
+     * type or a bad name would otherwise pass and mark the section verified
+     * for the rest of the run. */
+    if (status >= 20) return BBS_EIO;
+    return BBS_OK;
+}
+
+#endif /* T64_STORE_SEQ */
+
+/* Every process exit must leave the drive's persistent navigation cursor at
+ * "home" — wherever the install's own binaries live — not wherever the last
+ * op left it. Both builds have exactly this disease: the cursor (SoftIEC's
+ * CD: target, sd2iec's CP<n> partition) is drive state that survives a
+ * reset and a power cycle, so a stranded cursor breaks the operator's very
+ * next LOAD"BOOT...",device with FILE NOT FOUND (same disease commit
+ * e57b968 fixed for src-diag/, see cfgread.c's tail comment; verified on a
+ * physical sd2iec left on partition 2 by a REL CONFIGURE session while the
+ * install lived in partition 1). One function, two bodies — mirrors
+ * disk_select_partition()'s own #ifdef shape, since "home" resolves
+ * differently per build but the exit-time obligation is identical.
+ *
+ * T64_STORE_SEQ: there is no config field for the tree root, so it is
+ * derived by stripping bbs_cfg.init_system's last /-component — sound
+ * because tools/migrate-d81.py always builds the section folders as
+ * siblings of one root; a sysop-chosen layout that breaks this assumption
+ * just makes the CD: land somewhere else, which is inert (see below), not
+ * destructive.
+ *
+ * Reuses disk_errmsg as the command scratch buffer instead of adding a
+ * static one: disk_cmd() -> check_status() -> read_status() overwrites
+ * disk_errmsg right after krnio_open() has already consumed the name, so
+ * nothing downstream ever observes the borrowed content. cut is bounded by
+ * CFG_INIT_MAX-1 (23), so "CD:" + cut + NUL never exceeds sizeof(disk_errmsg)
+ * (40) and needs no runtime bounds check.
+ *
+ * A CD: to a wrong-but-existing folder is harmless (nothing here reads a
+ * result), and CD: to a nonexistent one leaves the cursor unmoved (measured
+ * on hardware) — either way this can never be worse than the stranded
+ * cursor it replaces.
+ *
+ * REL: "home" is NOT partition 0 — it's whatever partition the install's
+ * binaries actually occupy, i.e. bbs_cfg.drive_system. This just re-invokes
+ * disk_select_partition() with the config's own device/partition: that
+ * function already contains the correct partition-0 handling (send nothing
+ * at all — see its comment, which is explicit that this must stay
+ * byte-for-byte quiet for a partition-0 install) plus the redundant-CP
+ * cache, so duplicating either here would risk drifting from them. Before
+ * cfg_init() has run, bbs_cfg.drive_system is still its CFG_DRIVE_DEFAULT
+ * (0) zero value, so this is correctly a no-op too — the same pre-init
+ * no-op the T64_STORE_SEQ body gets from init_system still being empty. */
+void disk_reset_cursor_root(u8 device)
+{
+#ifdef T64_STORE_SEQ
+    char *cmd = disk_errmsg;
+    u8 i, cut = 0;
+
+    for (i = 0; bbs_cfg.init_system[i]; i++) {
+        if (bbs_cfg.init_system[i] == '/') cut = i;
+    }
+    if (cut == 0) return;
+
+    cmd[0] = 'C'; cmd[1] = 'D'; cmd[2] = ':';
+    for (i = 0; i < cut; i++) cmd[3 + i] = bbs_cfg.init_system[i];
+    cmd[3 + cut] = '\0';
+
+    disk_cmd(device, cmd);
+#else
+    disk_select_partition(device, bbs_cfg.drive_system);
+#endif
+}
+
 bbs_err_t disk_select_partition(u8 device, u8 partition)
 {
+#ifdef T64_STORE_SEQ
+    char cmd[28];
+    const char *path;
+
+    if (partition >= CFG_SECTION_COUNT) return BBS_EIO;
+    path = s_section_path[partition];
+    if (!path || path[0] == '\0') return BBS_OK;
+
+    if (s_part_device == device &&
+        (s_part_partition == partition ||
+         (s_last_path && strcmp(s_last_path, path) == 0))) {
+        return BBS_OK;
+    }
+
+    sprintf(cmd, "CD:%s", path);
+    if (disk_cmd(device, cmd) != BBS_OK) {
+        /* Never leave a stale cache entry behind: the next call must retry
+         * the switch rather than assume the cursor moved. */
+        s_part_device = 0xFF;
+        return BBS_EIO;
+    }
+
+    /* Must cache AFTER disk_cmd() returns — see the CP<n> path below for why
+     * (disk_cmd() unconditionally invalidates this cache). */
+    s_part_device    = device;
+    s_part_partition = partition;
+    s_last_path      = path;
+
+    if (!s_section_verified[partition]) {
+        bbs_err_t verify_err = disk_verify_section_marker(device);
+        if (verify_err != BBS_OK) {
+            s_part_device = 0xFF;
+            return verify_err;
+        }
+        s_section_verified[partition] = TRUE;
+    }
+    return BBS_OK;
+#else
     char cmd[8];
     bbs_err_t err;
 
@@ -67,6 +215,40 @@ bbs_err_t disk_select_partition(u8 device, u8 partition)
      * would be wiped out by our own request. */
     s_part_device    = device;
     s_part_partition = partition;
+    return BBS_OK;
+#endif
+}
+
+/* Load an overlay PRG (a P"OVL_..." PETSCII literal) from bbs_cfg.device_system.
+ *
+ * In T64_STORE_SEQ builds the drive's directory cursor is persistent state
+ * (see disk_select_partition() above); every overlay load must position it
+ * first or krnio_load silently resolves against whatever folder a prior
+ * operation left the cursor in and fails without telling anyone (the exact
+ * bug this function exists to close — see git history for the WFC-overlay
+ * incident it replaces). All overlays load from the system section (index
+ * 0) because that is where the cursor already sits for nearly all of the
+ * BBS's runtime (content opens go through device_system/drive_system too);
+ * only OVL_BOOT and CONFIG stay at the tree root, loaded before cfg_init()
+ * has registered any section path to CD to. In the REL build,
+ * disk_select_partition() is skipped entirely — overlay loads have never
+ * needed or sent a CP<n> and must not start now.
+ *
+ * Returns BBS_EIO if positioning or the load itself fails. Callers must
+ * not transfer control into the overlay region when this returns non-OK:
+ * the load failing leaves whatever was resident there before, valid or
+ * not, which is exactly the stale-overlay hazard this guards against. */
+bbs_err_t disk_load_overlay(const char *name)
+{
+#ifdef T64_STORE_SEQ
+    if (disk_select_partition(bbs_cfg.device_system, bbs_cfg.drive_system) != BBS_OK) {
+        return BBS_EIO;
+    }
+#endif
+    krnio_setnam(name);
+    if (!krnio_load(1, bbs_cfg.device_system, 1)) {
+        return BBS_EIO;
+    }
     return BBS_OK;
 }
 
@@ -143,6 +325,22 @@ bbs_err_t disk_putc(char c)
 {
     int r = krnio_putch(CFG_FNUM_DATA, c);
     return (r >= 0) ? BBS_OK : BBS_EIO;
+}
+
+/* Bulk write: one CHKOUT + N x CHROUT + one CLRCHN, amortising the channel
+ * overhead that disk_putc() pays per byte. Measured 6.4x faster on SoftIEC.
+ *
+ * krnio_write() returns `num` whenever krnio_chkout() succeeds — it never
+ * inspects KERNAL status (ST) between CHROUT calls, so a returned count
+ * equal to `len` only proves the channel opened, not that the bytes reached
+ * the drive. Check krnio_status() (KERNAL READST, $FFB7) right after: a
+ * write that failed partway (disk full, device dropped) leaves it non-zero
+ * even though krnio_write() already returned success. */
+bbs_err_t disk_write(const u8 *buf, u8 len)
+{
+    int r = krnio_write(CFG_FNUM_DATA, (const char *)buf, (int)len);
+    if (r != (int)len) return BBS_EIO;
+    return (krnio_status() == KRNIO_OK) ? BBS_OK : BBS_EIO;
 }
 
 bbs_err_t disk_puts(const char *s)

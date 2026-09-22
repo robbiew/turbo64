@@ -3,7 +3,7 @@
  *
  * Edit BBS configuration. Writes changes to the "CONFIG" file via cfg_save().
  * [1] SETTINGS — identity, access, toggles
- * [2] DEVICES  — CBM device/drive for system, msgs, files, doors
+ * [2] DEVICES  — CBM device/drive for system, msgs, files, doors, gfiles
  * [3] BAUD RATE — modem speed select
  */
 
@@ -13,6 +13,7 @@
 #include <ctype.h>
 #include "bbs/cfg.h"
 #include "bbs/config.h"
+#include "bbs/devspec.h"
 #include "bbs/err.h"
 #include "bbs/sstatus.h"
 #include "bbs/access.h"
@@ -32,6 +33,7 @@ static char s_dev_sys[CFG_VALUE_MAX];
 static char s_dev_msgs[CFG_VALUE_MAX];
 static char s_dev_files[CFG_VALUE_MAX];
 static char s_dev_doors[CFG_VALUE_MAX];
+static char s_dev_gfiles[DEVSPEC_BUF_MAX];
 static char s_baud[6];
 
 static const char *s_baud_opts[] = {
@@ -197,7 +199,7 @@ static void do_settings(u8 device)
 
 static void do_devices(void)
 {
-  ui_edit_field_t f[4];
+  ui_edit_field_t f[5];
   bbs_err_t err;
   int sel;
 
@@ -205,13 +207,15 @@ static void do_devices(void)
   cfg_format_device_spec(s_dev_msgs,  bbs_cfg.device_msgs,   bbs_cfg.drive_msgs,   bbs_cfg.init_msgs);
   cfg_format_device_spec(s_dev_files, bbs_cfg.device_files,  bbs_cfg.drive_files,  bbs_cfg.init_files);
   cfg_format_device_spec(s_dev_doors, bbs_cfg.device_doors,  bbs_cfg.drive_doors,  bbs_cfg.init_doors);
+  cfg_format_device_spec(s_dev_gfiles,bbs_cfg.device_gfiles, bbs_cfg.drive_gfiles, bbs_cfg.init_gfiles);
 
   FIELD_INIT(f[0], "SYSDEV",   s_dev_sys,   CFG_VALUE_MAX - 1); f[0].validate = validate_device;
   FIELD_INIT(f[1], "MSGDEV",   s_dev_msgs,  CFG_VALUE_MAX - 1); f[1].validate = validate_device;
   FIELD_INIT(f[2], "FILEDEV",  s_dev_files, CFG_VALUE_MAX - 1); f[2].validate = validate_device;
   FIELD_INIT(f[3], "DOORDEV",  s_dev_doors, CFG_VALUE_MAX - 1); f[3].validate = validate_device;
+  FIELD_INIT(f[4], "GFILEDEV", s_dev_gfiles,DEVSPEC_BUF_MAX - 1); f[4].validate = validate_device;
 
-  sel = ui_edit_form("CONFIG: DEVICES", f, 4);
+  sel = ui_edit_form("CONFIG: DEVICES", f, 5);
   if (sel == -1) return;
 
   cfg_parse_device_spec(s_dev_sys,   &bbs_cfg.device_system, &bbs_cfg.drive_system,
@@ -222,6 +226,8 @@ static void do_devices(void)
                         bbs_cfg.init_files,  (u8)sizeof(bbs_cfg.init_files));
   cfg_parse_device_spec(s_dev_doors, &bbs_cfg.device_doors,  &bbs_cfg.drive_doors,
                         bbs_cfg.init_doors,  (u8)sizeof(bbs_cfg.init_doors));
+  cfg_parse_device_spec(s_dev_gfiles,&bbs_cfg.device_gfiles, &bbs_cfg.drive_gfiles,
+                        bbs_cfg.init_gfiles, (u8)sizeof(bbs_cfg.init_gfiles));
 
   err = cfg_save();
   if (err != BBS_OK) { ui_error("SAVE FAILED."); return; }

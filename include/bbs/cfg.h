@@ -14,7 +14,24 @@
 /** Configuration value buffer size (for key and value) */
 #define CFG_KEY_MAX     32
 #define CFG_VALUE_MAX   64
+
+#ifdef T64_STORE_SEQ
+/* SoftIEC build: these four fields hold the absolute section FOLDER path
+ * (e.g. "/USB1/BBS/SYSTEM"), not a DOS init command. They are reinterpreted
+ * rather than renamed because 28 call sites pass them to
+ * cfg_send_drive_init(), which becomes a no-op here. */
+#define CFG_INIT_MAX    24
+#else
 #define CFG_INIT_MAX    16
+#endif
+
+/* Number of storage sections: system, msgs, files, doors, gfiles — one per
+ * device_/drive_/init_ triple below. Defined here rather than in
+ * bbs/hal/disk.h because the section set is owned by the config layer (this
+ * struct is where the five sections are actually enumerated); disk.c's
+ * T64_STORE_SEQ section-index arrays just consume this count to size and
+ * bounds-check themselves. */
+#define CFG_SECTION_COUNT  5
 
 /** Modem carrier-detection mode.
  *  AUTO: probe for U64 UCI support at boot; use U64 if present, otherwise VICE.
@@ -42,6 +59,9 @@ typedef struct {
   u8 idle_timeout_mins;      /* Keyboard idle timeout (minutes); 0 = disabled */
   u16 call_time_limit;       /* Per-access-level time limit (for future expansion) */
 
+  /* In SoftIEC builds drive_* is a SECTION INDEX (0=system, 1=msgs, 2=files,
+   * 3=doors, 4=gfiles) into the five init_* folder paths, not a CP<n>
+   * partition value. disk_select_partition() resolves it; see bbs/hal/disk.h. */
   /* Device assignments */
   u8 device_system;          /* CBM device for system files (default 8) */
   u8 drive_system;           /* Logical drive / partition for system files */
@@ -55,6 +75,9 @@ typedef struct {
   u8 device_doors;           /* CBM device for door programs (default 10) */
   u8 drive_doors;            /* Logical drive / partition for door programs */
   char init_doors[CFG_INIT_MAX]; /* DOS init command for door device */
+  u8 device_gfiles;          /* CBM device for gfiles/menus/prompts */
+  u8 drive_gfiles;           /* partition, or section index 4 under T64_STORE_SEQ */
+  char init_gfiles[CFG_INIT_MAX]; /* DOS init command / folder path for gfiles device */
 
   /* Modem / network */
   char modem_init[20];       /* AT init string */

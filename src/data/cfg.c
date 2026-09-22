@@ -5,6 +5,7 @@
  */
 
 #include "bbs/cfg.h"
+#include "bbs/devspec.h"
 #include "bbs/err.h"
 #include "bbs/config.h"
 #include "bbs/drives.h"
@@ -12,9 +13,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#ifdef T64_BOOT_OVERLAY
-#include <c64/kernalio.h>
-#endif
 
 /* Global config instance */
 cfg_t bbs_cfg;
@@ -47,6 +45,28 @@ static void cfg_set_defaults(void) {
   bbs_cfg.call_time_limit = 3600;
   bbs_cfg.idle_timeout_mins = 3;
 
+  /* SoftIEC builds own drive_* as a section index (0=system..3=doors) here,
+   * set once rather than assigned-then-overridden, so cppcheck doesn't flag
+   * a redundant assignment on the REL-only values below. */
+#ifdef T64_STORE_SEQ
+  bbs_cfg.device_system = T64_DRIVE_SOFTIEC;
+  bbs_cfg.drive_system  = 0;
+  bbs_cfg.init_system[0] = '\0';
+  bbs_cfg.device_msgs   = T64_DRIVE_SOFTIEC;
+  bbs_cfg.drive_msgs    = 1;
+  bbs_cfg.init_msgs[0] = '\0';
+  bbs_cfg.device_files  = T64_DRIVE_SOFTIEC;
+  bbs_cfg.drive_files   = 2;
+  bbs_cfg.init_files[0] = '\0';
+  bbs_cfg.device_doors  = T64_DRIVE_SOFTIEC;
+  bbs_cfg.drive_doors   = 3;
+  bbs_cfg.init_doors[0] = '\0';
+  /* 0 is not a valid CBM device (8-30), so it doubles as the "no explicit
+   * DEV_GFILES line" sentinel without a separate flag — see cfg_init(). */
+  bbs_cfg.device_gfiles  = 0;
+  bbs_cfg.drive_gfiles   = 4;
+  bbs_cfg.init_gfiles[0] = '\0';
+#else
   bbs_cfg.device_system = T64_DRIVE_SYSTEM;
   bbs_cfg.drive_system = CFG_DRIVE_DEFAULT;
   bbs_cfg.init_system[0] = '\0';
@@ -59,6 +79,12 @@ static void cfg_set_defaults(void) {
   bbs_cfg.device_doors = T64_DRIVE_DOORS;
   bbs_cfg.drive_doors = CFG_DRIVE_DEFAULT;
   bbs_cfg.init_doors[0] = '\0';
+  /* 0 is not a valid CBM device (8-30), so it doubles as the "no explicit
+   * DEV_GFILES line" sentinel without a separate flag — see cfg_init(). */
+  bbs_cfg.device_gfiles = 0;
+  bbs_cfg.drive_gfiles = CFG_DRIVE_DEFAULT;
+  bbs_cfg.init_gfiles[0] = '\0';
+#endif
 
   strcpy(bbs_cfg.modem_init, "ATZ");
   bbs_cfg.baud_rate = 9600;
@@ -142,57 +168,7 @@ static bool_t cfg_parse_line(const char *line, char *out_key, char *out_value) {
 
 bool_t cfg_parse_device_spec(const char *value, u8 *device, u8 *drive,
                              char *init, u8 init_len) {
-  const char *p;
-  const char *q;
-
-  if (!value || !device || !drive || !init || init_len == 0) {
-    return FALSE;
-  }
-
-  p = value;
-  while (*p == ' ' || *p == '\t') p++;
-  if (*p == '\0') return FALSE;
-
-  *device = (u8)atoi(p);
-  *drive = CFG_DRIVE_DEFAULT;
-  init[0] = '\0';
-
-  q = p;
-  while (*q && *q != ';' && *q != '\r' && *q != '\n' && *q != ' ' && *q != '\t') {
-    q++;
-  }
-  if (*q != ';') {
-    return TRUE;
-  }
-
-  p = q + 1;
-  *drive = (u8)atoi(p);
-  while (*p && *p != ':' && *p != '\r' && *p != '\n' && *p != ' ' && *p != '\t') {
-    p++;
-  }
-  if (*p != ':') {
-    return TRUE;
-  }
-
-  p++;
-  if (*p == ';') {
-    p++;
-  }
-  while (*p == ' ' || *p == '\t') p++;
-  if (*p != '\0') {
-    u8 len = (u8)strlen(p);
-    while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t' ||
-                       p[len - 1] == '\r' || p[len - 1] == '\n')) {
-      len--;
-    }
-    if (len >= init_len) {
-      len = (u8)(init_len - 1);
-    }
-    strncpy(init, p, len);
-    init[len] = '\0';
-  }
-
-  return TRUE;
+  return devspec_parse(value, device, drive, init, init_len);
 }
 
 #ifdef T64_BOOT_OVERLAY
@@ -200,23 +176,21 @@ bool_t cfg_parse_device_spec(const char *value, u8 *device, u8 *drive,
 #pragma data(data)
 #endif
 void cfg_format_device_spec(char *buf, u8 device, u8 drive, const char *init) {
-  if (!buf) {
-    return;
-  }
-  if (init && init[0] != '\0') {
-    sprintf(buf, "%u;%u:;%s", (unsigned)device, (unsigned)drive, init);
-  } else if (drive != CFG_DRIVE_DEFAULT) {
-    sprintf(buf, "%u;%u:", (unsigned)device, (unsigned)drive);
-  } else {
-    sprintf(buf, "%u", (unsigned)device);
-  }
+  devspec_format(buf, device, drive, init);
 }
 
 bbs_err_t cfg_send_drive_init(u8 device, const char *init) {
+#ifdef T64_STORE_SEQ
+  /* No disk to initialize on SoftIEC; init_* holds a folder path here and the
+   * directory switch happens in disk_select_partition(). */
+  (void)device; (void)init;
+  return BBS_OK;
+#else
   if (!init || init[0] == '\0') {
     return BBS_OK;
   }
   return disk_cmd(device, init);
+#endif
 }
 
 /**
@@ -293,6 +267,14 @@ static void cfg_apply(const char *key, const char *value) {
       bbs_cfg.drive_doors = CFG_DRIVE_DEFAULT;
       bbs_cfg.init_doors[0] = '\0';
     }
+  } else if (strcmp(key, "DEV_GFILES") == 0) {
+    if (cfg_parse_device_spec(value, &bbs_cfg.device_gfiles,
+                              &bbs_cfg.drive_gfiles, bbs_cfg.init_gfiles,
+                              (u8)sizeof(bbs_cfg.init_gfiles)) == FALSE) {
+      bbs_cfg.device_gfiles = (u8)atoi(value);
+      bbs_cfg.drive_gfiles = CFG_DRIVE_DEFAULT;
+      bbs_cfg.init_gfiles[0] = '\0';
+    }
   } else if (strcmp(key, "MODEM_INIT") == 0) {
     strncpy(bbs_cfg.modem_init, value, sizeof(bbs_cfg.modem_init) - 1);
     bbs_cfg.modem_init[sizeof(bbs_cfg.modem_init) - 1] = '\0';
@@ -336,8 +318,9 @@ static bbs_err_t cfg_load_impl(void) {
    * this program in, so a BBS booted from device 10 reads its config from
    * device 10. Without this the default (T64_DRIVE_SYSTEM, normally 8) wins and
    * a BBS running off any other device silently reads someone else's config and
-   * then fails to find its own USR LOG. cfg_init() already loads the OVL_BOOT
-   * overlay from $BA; this makes the config agree with it.
+   * then fails to find its own USR LOG. main() already loaded OVL_BOOT from
+   * $BA before calling boot_sequence() (which calls cfg_init()); this makes
+   * the config agree with it.
    *
    * Values below 8 mean tape or a bus device that cannot hold files, so the
    * compile-time default is kept in that case.
@@ -377,20 +360,44 @@ static bbs_err_t cfg_load_impl(void) {
 /**
  * cfg_init()
  *
- * Resident entry point for config load.  In the BOOT build it pulls the
- * ovl_boot overlay into the shared $9700 region before running the boot-only
- * parse code, then returns — the overlay is dead weight afterward and the wfc/
- * msgs overlays freely overwrite it.  The overlay loads from the kernal current
- * device ($BA, the disk the BBS booted from) because bbs_cfg.device_system is
- * not populated until cfg_load_impl() runs.  The editor build has no overlay,
- * so this is a thin pass-through.
+ * Resident entry point for config load. In the BOOT build, OVL_BOOT (the
+ * bank cfg_load_impl() and boot_sequence() itself both live in) is already
+ * loaded by the time this runs — main() loads it before calling
+ * boot_sequence(), which is cfg_init()'s only caller — so there is nothing
+ * for cfg_init() to load here itself; an earlier version of this function
+ * did its own redundant OVL_BOOT load for that reason, back when
+ * boot_sequence() was resident and cfg_init() was the first boot-only code
+ * to run. The editor build has no overlay either way, so this is a thin
+ * pass-through in both builds.
  */
 bbs_err_t cfg_init(void) {
-#ifdef T64_BOOT_OVERLAY
-  krnio_setnam(P"OVL_BOOT");
-  krnio_load(1, (*(volatile u8 *)0xBA), 1);
+  bbs_err_t err;
+  err = cfg_load_impl();
+
+  /* Backward compat: an existing CONFIG has no DEV_GFILES line, so
+   * device_gfiles is still the cfg_set_defaults() sentinel (0, not a valid
+   * CBM device) here. Inherit the system device/folder so those installs
+   * keep working with zero SysOp action. Gating on the sentinel rather than
+   * init_gfiles[0]=='\0' matters: a bare "DEV_GFILES=9" is a legitimate
+   * explicit spec with no init string, and must not be discarded. Must run
+   * before disk_set_section_path(4, ...) below so the SIEC section gets the
+   * inherited path, not an empty one. */
+  if (bbs_cfg.device_gfiles == 0) {
+    bbs_cfg.device_gfiles = bbs_cfg.device_system;
+#ifndef T64_STORE_SEQ
+    bbs_cfg.drive_gfiles  = bbs_cfg.drive_system;
 #endif
-  return cfg_load_impl();
+    strcpy(bbs_cfg.init_gfiles, bbs_cfg.init_system);
+  }
+
+#ifdef T64_STORE_SEQ
+  disk_set_section_path(0, bbs_cfg.init_system);
+  disk_set_section_path(1, bbs_cfg.init_msgs);
+  disk_set_section_path(2, bbs_cfg.init_files);
+  disk_set_section_path(3, bbs_cfg.init_doors);
+  disk_set_section_path(4, bbs_cfg.init_gfiles);
+#endif
+  return err;
 }
 
 /* First disk_puts failure across a whole cfg_save pass; later writes are
@@ -447,6 +454,8 @@ bbs_err_t cfg_save(void) {
   sprintf(line, "DEV_FILES=%s\n",     spec);                                cfg_put(line);
   cfg_format_device_spec(spec, bbs_cfg.device_doors, bbs_cfg.drive_doors, bbs_cfg.init_doors);
   sprintf(line, "DEV_DOORS=%s\n",     spec);                                cfg_put(line);
+  cfg_format_device_spec(spec, bbs_cfg.device_gfiles, bbs_cfg.drive_gfiles, bbs_cfg.init_gfiles);
+  sprintf(line, "DEV_GFILES=%s\n",    spec);                                cfg_put(line);
   sprintf(line, "MODEM_INIT=%s\n",    bbs_cfg.modem_init);                 cfg_put(line);
   sprintf(line, "BAUD=%u\n",          (unsigned)bbs_cfg.baud_rate);        cfg_put(line);
   sprintf(line, "MODEM_TIMEOUT=%u\n", (unsigned)bbs_cfg.modem_timeout);    cfg_put(line);

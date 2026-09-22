@@ -68,6 +68,18 @@ bbs_err_t auth_check_access(const user_record_t *user, u8 min_level) {
   return BBS_OK;
 }
 
+/* auth_is_reserved_handle / auth_is_all_digits are static helpers called
+ * only from auth_validate_handle, just below, which lives in wfc_code —
+ * they used to inline into it there for free, but moving the caller to
+ * wfc_code (see its comment) stopped that: oscar64 materialised them as
+ * separate RESIDENT symbols instead, i.e. resident code reachable only
+ * from bank 2. Placing them in wfc_code alongside their only caller closes
+ * that gap, whether or not oscar64 chooses to re-inline them there. */
+#ifdef T64_BOOT_OVERLAY
+#pragma code(wfc_code)
+#pragma data(wfc_data)
+#endif
+
 /**
  * auth_is_reserved_handle()
  *
@@ -121,6 +133,11 @@ static u8 auth_is_all_digits(const char *handle) {
   return TRUE;  /* All chars were digits */
 }
 
+/* auth_validate_handle lives in wfc_code (same switch as the two helpers
+ * above), the same bank as both of its callers — newuser.c's registration
+ * flow and auth_register_new, just below — so every call to it is
+ * intra-bank. See the ovl_auth region comment in main.c for why bank 7
+ * (auth_prompt_login's bank) is wrong for it and bank 2 is right. */
 /**
  * auth_validate_handle()
  *
@@ -158,6 +175,19 @@ bbs_err_t auth_validate_handle(const char *handle, u8 device) {
   return BBS_OK;
 }
 
+
+/* auth_prompt_login is called only from session.c (resident) and calls only
+ * resident data-layer functions (users.c/usrptr.c have no overlay pragmas
+ * on the paths it uses), so it is safe to displace into its own overlay —
+ * see the ovl_auth region comment in main.c. auth_register_new and
+ * auth_validate_handle, above, do NOT live here: both are called from
+ * newuser.c's registration flow, which itself lives in the WFC overlay
+ * (bank 2) — an overlay-to-overlay call would land on whatever bank is
+ * actually loaded, not the callee, so they live in wfc_code instead. */
+#ifdef T64_BOOT_OVERLAY
+#pragma code(auth_code)
+#pragma data(auth_data)
+#endif
 
 /**
  * auth_prompt_login()
@@ -213,6 +243,21 @@ bbs_err_t auth_prompt_login(session_t *s) {
 
   return BBS_OK;
 }
+
+/* auth_register_new lives in wfc_code — the SAME overlay bank (2) as its
+ * only caller, newuser.c's registration flow, which is itself compiled into
+ * wfc_code (see newuser.c's header comment). This is an intra-bank call,
+ * not the cross-bank hazard bank-7 auth_prompt_login had to avoid: WFC has
+ * 989 bytes free ($9700-$C000 minus msgs/wfc content, per the `regions`
+ * table in BOOT-*.map), comfortably covering this function's ~660 bytes.
+ * auth_validate_handle (called from here AND from newuser.c directly)
+ * stays resident rather than also moving here — it would fit, but there is
+ * no need to spend WFC's remaining headroom for savings this task doesn't
+ * need. */
+#ifdef T64_BOOT_OVERLAY
+#pragma code(wfc_code)
+#pragma data(wfc_data)
+#endif
 
 /**
  * auth_register_new()
@@ -283,3 +328,8 @@ bbs_err_t auth_register_new(session_t *s) {
 
   return BBS_OK;
 }
+
+#ifdef T64_BOOT_OVERLAY
+#pragma code(code)
+#pragma data(data)
+#endif

@@ -247,7 +247,13 @@ static u8 bull_load_board(u8 idx) {
   if (board_by_index(idx, &s_board, bbs_cfg.device_msgs) != BBS_OK) return 0;
   s_board_idx = idx;
   s_cur_msg = 0;
+#ifndef T64_STORE_SEQ
+  /* Under T64_STORE_SEQ this bank-0 pre-warm is redundant: msg_index_get()
+   * lazily loads B<n>.IDX into REU (WINDOW region, bank 2) on first access
+   * via rel_open(), which is the same disk read this would otherwise force
+   * up front. */
   reu_index_load(s_board.id, bbs_cfg.device_msgs);
+#endif
   return msg_count_new(s_board.id, s_ptr->hwm[s_board.id - 1], 0, bbs_cfg.device_msgs);
 }
 
@@ -405,7 +411,11 @@ static void bull_do_post(u16 parent) {
         sprintf(buf, parent ? "REPLY #%u POSTED." : "MSG #%u POSTED.", (unsigned)new_id);
         bull_line(buf); reu_compose_init();
         board_by_id(s_board.id, &s_board, bbs_cfg.device_msgs);
+#ifndef T64_STORE_SEQ
+        /* Redundant under T64_STORE_SEQ: msg_index_put() already wrote the
+         * new record straight into the REU-resident WINDOW region. */
         reu_index_load(s_board.id, bbs_cfg.device_msgs);
+#endif
       } else bull_line("FAILED.");
     } else bull_line("ABORTED.");
   } /* close { editor_result_t res } */

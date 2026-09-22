@@ -23,9 +23,17 @@ static bbs_err_t usrday_open(u8 device, rel_handle_t *h)
 bbs_err_t usrday_load(u16 user_id, usr_day_record_t *out, u8 device)
 {
     rel_handle_t h;
+    /* err/got/buf alias the shared rel_scratch under T64_STORE_SEQ — see the
+     * comment on rel_scratch_buf/got/err in bbs/rel.h. */
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define got rel_scratch_got
+#define buf rel_scratch_buf
+#else
     bbs_err_t err;
     u8 buf[RECORD_SIZE_USR_DAY];
     u8 got;
+#endif
 
     if (!out || user_id == 0) return BBS_EBADARG;
 
@@ -51,12 +59,22 @@ bbs_err_t usrday_load(u16 user_id, usr_day_record_t *out, u8 device)
     out->mins_today  = (u16)buf[4] | ((u16)buf[5] << 8);
     return BBS_OK;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef got
+#undef buf
+#endif
 
 bbs_err_t usrday_save(u16 user_id, const usr_day_record_t *rec, u8 device)
 {
     rel_handle_t h;
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define buf rel_scratch_buf
+#else
     bbs_err_t err;
     u8 buf[RECORD_SIZE_USR_DAY];
+#endif
 
     if (!rec || user_id == 0) return BBS_EBADARG;
 
@@ -75,6 +93,10 @@ bbs_err_t usrday_save(u16 user_id, const usr_day_record_t *rec, u8 device)
     if (err != BBS_OK) { rel_close(h); return err; }
 
     err = rel_write(h, buf, RECORD_SIZE_USR_DAY);
-    rel_close(h);
+    err = rel_close_keep(h, err);
     return err;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef buf
+#endif

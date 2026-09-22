@@ -24,9 +24,18 @@ static bbs_err_t usrptr_open(u8 device, rel_handle_t *h)
 bbs_err_t usrptr_load(u16 user_id, usr_ptr_record_t *out, u8 device)
 {
     rel_handle_t h;
+    u8 i;
+    /* err/got/buf alias the shared rel_scratch under T64_STORE_SEQ — see the
+     * comment on rel_scratch_buf/got/err in bbs/rel.h. */
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define got rel_scratch_got
+#define buf rel_scratch_buf
+#else
     bbs_err_t err;
     u8 buf[RECORD_SIZE_USR_PTR];
-    u8 got, i;
+    u8 got;
+#endif
 
     if (!out || user_id == 0) return BBS_EBADARG;
 
@@ -55,13 +64,23 @@ bbs_err_t usrptr_load(u16 user_id, usr_ptr_record_t *out, u8 device)
     }
     return BBS_OK;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef got
+#undef buf
+#endif
 
 bbs_err_t usrptr_save(u16 user_id, const usr_ptr_record_t *rec, u8 device)
 {
     rel_handle_t h;
+    u8 i;
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define buf rel_scratch_buf
+#else
     bbs_err_t err;
     u8 buf[RECORD_SIZE_USR_PTR];
-    u8 i;
+#endif
 
     if (!rec || user_id == 0) return BBS_EBADARG;
 
@@ -78,9 +97,13 @@ bbs_err_t usrptr_save(u16 user_id, const usr_ptr_record_t *rec, u8 device)
     if (err != BBS_OK) { rel_close(h); return err; }
 
     err = rel_write(h, buf, RECORD_SIZE_USR_PTR);
-    rel_close(h);
+    err = rel_close_keep(h, err);
     return err;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef buf
+#endif
 
 void usrptr_advance(usr_ptr_record_t *ptr, u8 board_id, u16 msg_id)
 {

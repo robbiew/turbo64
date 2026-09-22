@@ -140,9 +140,22 @@ __noinline void door_run(session_t *s, const door_record_t *rec) {
 reload_ovl:
   /* Reload OVL_DOORS so action_doors_menu's code is back at its load address
    * before we return into it.  The door load (and the failed-load path above)
-   * clobbered $9700-$BFFF.  Mark WFC displaced too — it needs reload later. */
-  krnio_setnam(P"OVL_DOORS");
-  krnio_load(1, bbs_cfg.device_system, 1);
+   * clobbered $9700-$BFFF.  Mark WFC displaced too — it needs reload later.
+   *
+   * Unlike the "skip the overlay call" recovery used elsewhere (e.g.
+   * action_files/action_doors when their initial OVL_* load fails), this
+   * reload has no safe skip: door_run's caller (action_doors_menu or
+   * login_doors_iter) lives IN OVL_DOORS, and the C-level `return` below is
+   * an implicit jump back into that region — there is no way to redirect
+   * it. If the reload fails, $9700 holds whatever the door (or the failed
+   * load itself) left there, and returning would execute it as if it were
+   * doors_code. Halting with a legible message is the only safe option;
+   * the alternative is the exact silent-garbage crash this whole fix
+   * exists to close. */
+  if (disk_load_overlay(P"OVL_DOORS") != BBS_OK) {
+    session_emit(s, "\r\nERROR: OVL_DOORS RESTORE FAILED. HALTED.\r\n");
+    for (;;) { }
+  }
   wfc.ovl_wfc_loaded = FALSE;
 }
 
@@ -245,9 +258,15 @@ void login_doors_iter(session_t *s) {
  * With no login doors registered the iterator's flag/visibility checks are
  * all skipped, so login proceeds unchanged. */
 void session_run_login_doors(session_t *s) {
-  krnio_setnam(P"OVL_DOORS");
-  krnio_load(1, bbs_cfg.device_system, 1);
-  login_doors_iter(s);
+  /* login_doors_iter lives IN the overlay just requested — skip it on a
+   * failed load rather than run into whatever is still at $9700.  Safe to
+   * just fall through to wfc_reload(): this shim is resident, so login
+   * proceeds normally (minus any login-flagged doors this call). */
+  if (disk_load_overlay(P"OVL_DOORS") != BBS_OK) {
+    session_emit(s, "\r\nERROR: OVL_DOORS LOAD FAILED.\r\n");
+  } else {
+    login_doors_iter(s);
+  }
   wfc.ovl_wfc_loaded = FALSE;  /* iterator + door loads displaced wfc */
   wfc_reload();                /* restore 40-col spy footer before the menu */
 }

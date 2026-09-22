@@ -14,9 +14,17 @@ questions only hardware can answer. Build with `make diag`; the PRGs land in
 | `CLEAN` | Scratch T/64's system files from one device/partition |
 | `WIPE` | Scratch **every** file on a device/partition (destructive) |
 | `COPYALL` | Copy the T/64 program set between devices, through the C64 |
+| `SIECPROBE` | Throwaway probe: the SoftIEC SEQ backend's four correctness gates and five cost measurements — see `docs/probe-results/PHASE0.md` |
+| `SEQTEST` | Exercises `rel_seq.c`/`seq_region.c` (the `T64_STORE_SEQ` REL-over-SEQ backend) directly |
+| `USRREAD` | USR LOG raw-open vs `rel_seq` read, standalone — found the boot data-loss bug (see `USRSWEEP`) |
+| `USRSWEEP` | Reproduces the BOOT-SIEC boot order (cfg fields, `require_storage`, sweep) around a USR LOG read, to isolate what breaks it |
+| `SEQNAME` | Does a SoftIEC content file need a host `.SEQ` extension to open? |
+| `CFGREAD` | Does `cfg_init()` actually populate the section paths before the USR LOG read — the boot-order difference `USRSWEEP` couldn't isolate on its own |
 
-They link `src/hal/disk.c` and `src/hal/rel.c` directly, so a pass here is evidence
-about the code the BBS actually runs — not a reimplementation that might diverge.
+`PTEST` through `SIECPROBE` link `src/hal/disk.c` and `src/hal/rel.c` directly; `SEQTEST`
+through `CFGREAD` link the `T64_STORE_SEQ` backend (`rel_seq.c`, `seq_region.c`, `reu.c`)
+instead — either way, a pass here is evidence about the code the BBS actually runs, not a
+reimplementation that might diverge.
 
 `EXISTS` exists because directory listings wrap at 40 columns and truncate names — it
 answers "is this file here" from the DOS status code instead of parsed text. Note **64**

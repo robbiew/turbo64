@@ -12,6 +12,9 @@ vendor/*
 *.swo
 *~
 
+# Python bytecode cache (tools/migrate-d81.py, etc.)
+__pycache__/
+
 # Disk images and related files (except for the seed and blank disk images)
 *.D81
 !data/users-seed.d81

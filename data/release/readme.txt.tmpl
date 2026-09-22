@@ -15,11 +15,33 @@ and VICE emulation.
 
 Current status: v__VERSION__ -- login/registration, terminal translation
 (PETSCII, ANSI/CP437, ASCII), bulletin boards, door programs (external
-Oscar64 plug-ins, with an author dev kit), and the Configure editor are
-working.
+Oscar64 plug-ins, with an author dev kit), Punter and Zmodem file
+transfers, and the Configure editor are working. As of v__VERSION__, T/64
+ships TWO builds -- see WHICH BUILD DO I WANT below.
 
-Not working: private mail, file transfers, SysOp chat, polls/voting,
-and more remain stubbed.
+Not working: private mail, SysOp chat, polls/voting, and more remain
+stubbed.
+
+WHICH BUILD DO I WANT
+----------------------
+
+  Your hardware                          | Build            | Media
+  ----------------------------------------+------------------+-------------
+  C64 Ultimate, Software IEC             | *-SIEC.prg       | a folder on
+                                          |                  | USB/SD; no
+                                          |                  | disk image
+  sd2iec/uIEC/1571/1581/emulated 1581    | plain .prg       | the .d81
+
+If you're not sure: if you access your Ultimate's storage as a mounted
+USB/SD folder tree (not a .d81 you attach to a virtual drive), you want
+the -SIEC build. Everyone else wants the plain build and the .d81.
+
+The SIEC build has two hard requirements: an REU enabled in the
+Ultimate's menu (without one, every database operation fails), and a
+folder tree produced by tools/migrate-d81.py (included in this archive)
+-- see SOFTIEC QUICK START below. Known gaps: free-space displays read 0
+(SoftIEC reports no block count), and each storage section is one flat
+16-character namespace.
 
 REQUIREMENTS
 ------------
@@ -27,21 +49,23 @@ REQUIREMENTS
 Hardware / emulator:
 - Commodore 64 with SwiftLink/ACIA cartridge at $DE00, OR C64 Ultimate
   with built-in ACIA, OR VICE x64sc with tcpser modem bridge
-- Two .D81 disk images -- one for the BBS, one blank for message boards
-  (device 9)
-- 16 MB REU required for message boards and some other features.  The
-  C64 Ultimate has one built in; VICE can be configured with one.  The
-  BBS boots and lets you log in without a REU, but reading and posting
-  messages need it.
+- REL build: two .D81 disk images -- one for the BBS, one blank for
+  message boards (device 9)
+- SIEC build: a C64 Ultimate with Software IEC storage and an REU enabled
+- 16 MB REU required for message boards and some other features on the
+  REL build (hard-required on the SIEC build). The C64 Ultimate has one
+  built in; VICE can be configured with one.
 
 Developer build host (macOS / Linux):
 - oscar64 compiler -- bash tools/install-oscar64.sh
-- c1541 from VICE package (disk assembly)
+- c1541 from VICE package (disk assembly; also needed to run
+  migrate-d81.py for a SIEC install)
 - c64u deploy tool for C64U -- bash tools/install-c64u.sh
 - tcpser for VICE modem emulation -- macOS: brew install tcpser
+- python3 (SIEC installs only, to run migrate-d81.py)
 
-QUICK START
------------
+QUICK START (REL build -- disk image)
+--------------------------------------
 
 1. Mount TURBO64-__VERSION__.d81 on device 8.
 
@@ -80,6 +104,44 @@ QUICK START
 
    If USR LOG: NOT FOUND or USR LOG: EMPTY, return to CONFIGURE and
    run Init Files.
+
+SOFTIEC QUICK START (C64 Ultimate only -- no disk image)
+----------------------------------------------------------
+
+This archive keeps the SIEC binaries and migrate-d81.py under the same
+relative paths the project itself uses (tools/, include/bbs/,
+build/c64/siec/), so the commands below work unzip-and-cd with no extra
+flags.
+
+1. Enable an REU in the Ultimate's menu, if not already on.
+
+2. From the unzipped archive folder, build the SoftIEC tree from the
+   included .d81 (needs python3 and c1541 on your PATH):
+     python3 tools/migrate-d81.py TURBO64-__VERSION__.d81 siec-tree \
+         --base /USB1/TURBO64 --device 11
+   (--base is where the tree will live on the stick; --device is the
+   SoftIEC device number, 11 by default.)
+
+   The tree includes both BOOT-SIEC.prg and CONFIGURE-SIEC.prg, so there
+   is nothing to copy by hand. Every data file in it is named the way the
+   Ultimate itself names files the C64 writes (usr log.seq, callers.seq,
+   config.seq, ...); leave those names alone.
+
+3. Copy the entire contents of siec-tree/ onto the USB stick or SD card
+   at the --base path you gave above, so that siec-tree/SYSTEM becomes
+   /USB1/TURBO64/SYSTEM, and so on. Do not mount anything on device 11.
+
+4. Boot:
+     LOAD"BOOT-SIEC",11
+     RUN
+
+   To run the SysOp editor instead:
+     LOAD"CONFIGURE-SIEC",11
+     RUN
+
+   If the BBS reports section-folder or REU errors at boot, re-check the
+   REU is enabled and that the tree landed at exactly the --base path you
+   migrated for.
 
 CONFIGURATION REFERENCE
 -----------------------
@@ -131,7 +193,6 @@ WHAT IS NOT YET IMPLEMENTED
 The following features return a placeholder message:
 
 - Private mail
-- File transfers (upload/download)
 - SysOp chat / page
 - Polls and votes
 - Last caller display
@@ -178,4 +239,4 @@ what you did, and the exact error or unexpected behaviour.
 GITHUB
 ------
 
-https://github.com/mortonproduction/turbo64
+https://github.com/robbiew/turbo64

@@ -7,8 +7,18 @@
 #                       USR LOG REL file. New PRG files replace the old ones.
 #   --fetch-users       Fetch the live .d81 from U64 (via fetch-u64.sh) and
 #                       use it as the base image (implies --seed-users).
+#   --extra-prg <path>  Write one additional host PRG onto the image, named
+#                       from its own basename (lowercased, extension
+#                       stripped) via the same cbm_name() rule as every
+#                       other PRG here. Opt-in only — no caller passes this
+#                       by default, so `make disk` / a bare invocation never
+#                       ships it. Intended for deploy.sh's uiec target to
+#                       stage src-diag/copyall.c's COPYALL.prg; do not use
+#                       it to put other src-diag/ diagnostics on a release
+#                       image.
 #
-# If neither option is provided, a fresh empty disk is created (no user files).
+# If neither --seed-users nor --fetch-users is provided, a fresh empty disk
+# is created (no user files).
 
 set -euo pipefail
 
@@ -17,6 +27,7 @@ C1541="${C1541:-c1541}"
 
 SEED_D81=""
 FETCH_USERS=0
+EXTRA_PRG=""
 
 # Parse options
 while [[ $# -gt 0 ]]; do
@@ -29,8 +40,12 @@ while [[ $# -gt 0 ]]; do
             FETCH_USERS=1
             shift
             ;;
+        --extra-prg)
+            EXTRA_PRG="$2"
+            shift 2
+            ;;
         -h|--help)
-            sed -n '2,15p' "$0"
+            sed -n '2,20p' "$0"
             exit 0
             ;;
         *)
@@ -56,6 +71,11 @@ fi
 if [ ! -f "$CONFIGURE_PRG" ]; then
     echo "ERROR: CONFIGURE PRG not found: $CONFIGURE_PRG" >&2
     echo "Run 'make editor' first." >&2
+    exit 1
+fi
+
+if [ -n "$EXTRA_PRG" ] && [ ! -f "$EXTRA_PRG" ]; then
+    echo "ERROR: --extra-prg file not found: $EXTRA_PRG" >&2
     exit 1
 fi
 
@@ -203,6 +223,7 @@ PYPATCH
     "$C1541" "$OUTPUT_DISK" -delete "ovl_doors" >/dev/null 2>&1 || true
     "$C1541" "$OUTPUT_DISK" -delete "ovl_files"  >/dev/null 2>&1 || true
     "$C1541" "$OUTPUT_DISK" -delete "ovl_zmodem" >/dev/null 2>&1 || true
+    "$C1541" "$OUTPUT_DISK" -delete "ovl_auth"   >/dev/null 2>&1 || true
     "$C1541" "$OUTPUT_DISK" -delete "fortune"   >/dev/null 2>&1 || true
     # Clear all SEQ files so stale gfiles disappear when the seed is reused.
     "$C1541" "$OUTPUT_DISK" -list 2>/dev/null | while IFS= read -r line; do
@@ -221,6 +242,25 @@ echo "Adding boot PRG..."
 
 echo "Adding configure PRG..."
 "$C1541" "$OUTPUT_DISK" -write "$CONFIGURE_PRG" "$(cbm_name "$CONFIGURE_PRG")" >/dev/null 2>&1 || { echo "ERROR: failed to write configure PRG" >&2; exit 1; }
+
+# Opt-in only (--extra-prg) — never written unless a caller explicitly asks
+# for it, so `make disk` / a bare invocation keeps release images clean.
+# c1541 -write with no ",s" suffix defaults to PRG, which is what a
+# diagnostic like COPYALL needs (see CLAUDE.md's c1541 file-type note).
+if [ -n "$EXTRA_PRG" ]; then
+    extra_cbm="$(cbm_name "$EXTRA_PRG")"
+    echo "Adding extra PRG (${extra_cbm})..."
+    # Delete any stale copy first — harmless no-op on a fresh disk, but
+    # matters if --seed-users points at an image that already has one.
+    "$C1541" "$OUTPUT_DISK" -delete "$extra_cbm" >/dev/null 2>&1 || true
+    "$C1541" "$OUTPUT_DISK" -write "$EXTRA_PRG" "$extra_cbm" >/dev/null 2>&1 || \
+        { echo "ERROR: failed to write extra PRG ($EXTRA_PRG)" >&2; exit 1; }
+fi
+
+# Overlays below are read explicitly from build/c64/ (the REL build's
+# output dir) — never build/c64/siec/. The SIEC build (make c64-siec) writes
+# its own same-named overlays there instead, compiled to different addresses;
+# this disk carries the REL binary, so it must only ever pick up REL overlays.
 
 # Add MSGS overlay (bulletin board, message base, editor, user-pointer modules)
 MSGS_OVL_PRG="$ROOT/build/c64/ovl_msgs.prg"
@@ -270,6 +310,14 @@ if [ -f "$ZMODEM_OVL_PRG" ]; then
         { echo "WARNING: failed to write ZMODEM overlay" >&2; }
 fi
 
+# Add AUTH overlay (interactive login: auth_prompt_login)
+AUTH_OVL_PRG="$ROOT/build/c64/ovl_auth.prg"
+if [ -f "$AUTH_OVL_PRG" ]; then
+    echo "Adding AUTH overlay..."
+    "$C1541" "$OUTPUT_DISK" -write "$AUTH_OVL_PRG" "ovl_auth" >/dev/null 2>&1 || \
+        { echo "WARNING: failed to write AUTH overlay" >&2; }
+fi
+
 # Add the bundled example door (built by `make all` via the door-example target).
 # Doors are normally sysop-supplied; this one ships so the DOOR PROGRAMS feature
 # is demonstrable out of the box (register it in CONFIGURE: device 8, key F).
@@ -278,6 +326,16 @@ if [ -f "$EXAMPLE_DOOR_PRG" ]; then
     echo "Adding example door (fortune)..."
     "$C1541" "$OUTPUT_DISK" -write "$EXAMPLE_DOOR_PRG" "fortune" >/dev/null 2>&1 || \
         { echo "WARNING: failed to write example door" >&2; }
+else
+    # Do NOT skip silently. A missing door is invisible on the resulting disk
+    # but not harmless downstream: src-diag/copyall.c's file list includes
+    # FORTUNE unconditionally, so every COPYALL run to a physical drive
+    # reports a failure for a file that was never built. That cost real
+    # debugging time when it showed up as "DONE. 1 FAILED" with no clue why.
+    echo "WARNING: $EXAMPLE_DOOR_PRG not found — the example door will be" >&2
+    echo "         missing from $(basename "$OUTPUT_DISK"), the DOORS feature" >&2
+    echo "         will have nothing to demonstrate, and COPYALL will report" >&2
+    echo "         FORTUNE as a failure. Run 'make door-example' first." >&2
 fi
 
 # Add config data file if present

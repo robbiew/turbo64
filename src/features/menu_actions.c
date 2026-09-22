@@ -17,7 +17,7 @@
 #include "bbs/records.h"
 #include "bbs/doors.h"
 #include "bbs/files.h"
-#include <c64/kernalio.h>
+#include "bbs/hal/disk.h"
 
 /**
  * MAIN Menu Actions
@@ -62,10 +62,19 @@ void action_help(session_t *s) {
 /* action_list_boards — entry for all MSG menu actions.
  * Loads OVL_MSGS overlay from system disk then runs bulletin_run.  The overlay
  * occupies $9D80-$BFEF; core code at $0880-$9D7F stays resident for callbacks.
- * Reloading on each entry is safe (same bytes, same address) and fast on CMD HD. */
+ * Reloading on each entry is safe (same bytes, same address) and fast on CMD HD.
+ *
+ * bulletin_run() lives IN the overlay just loaded — on a failed load it must
+ * not be called (that would run whatever stale overlay is still at $9700).
+ * Skipping it and returning here is always safe: this shim is resident, so
+ * control returns to the resident menu dispatcher regardless of what sits
+ * in the overlay region. */
 void action_list_boards(session_t *s) {
-  krnio_setnam(P"OVL_MSGS");
-  krnio_load(1, bbs_cfg.device_system, 1);
+  if (disk_load_overlay(P"OVL_MSGS") != BBS_OK) {
+    session_emit(s, "\r\nERROR: OVL_MSGS LOAD FAILED.\r\n");
+    s->menu_displayed = FALSE;
+    return;
+  }
   wfc.ovl_wfc_loaded = FALSE;
   bulletin_run(s);
   wfc_reload();  /* restore OVL_WFC (spy view code) before returning to menu */
@@ -155,8 +164,11 @@ void action_clear_on_msg(session_t *s) {
  * upload, search) are replaced by a single entry that hands control to the
  * OVL_FILES dispatch loop for the duration of the files session. */
 void action_files(session_t *s) {
-  krnio_setnam(P"OVL_FILES");
-  krnio_load(1, bbs_cfg.device_system, 1);
+  if (disk_load_overlay(P"OVL_FILES") != BBS_OK) {
+    session_emit(s, "\r\nERROR: OVL_FILES LOAD FAILED.\r\n");
+    s->menu_displayed = FALSE;
+    return;
+  }
   wfc.ovl_wfc_loaded = FALSE;
   files_run(s);
   wfc_reload();
@@ -173,8 +185,11 @@ void action_files(session_t *s) {
  * OVL_DOORS after a door runs, so action_doors_menu's code is always valid
  * when it returns here. */
 void action_doors(session_t *s) {
-  krnio_setnam(P"OVL_DOORS");
-  krnio_load(1, bbs_cfg.device_system, 1);
+  if (disk_load_overlay(P"OVL_DOORS") != BBS_OK) {
+    session_emit(s, "\r\nERROR: OVL_DOORS LOAD FAILED.\r\n");
+    s->menu_displayed = FALSE;
+    return;
+  }
   wfc.ovl_wfc_loaded = FALSE;
   action_doors_menu(s);
   wfc_reload();

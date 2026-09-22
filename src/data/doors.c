@@ -149,10 +149,18 @@ bbs_err_t door_by_index(u8 n, door_record_t *out, u8 device) {
 }
 
 bbs_err_t door_by_id(u8 id, door_record_t *out, u8 device) {
-  bbs_err_t err;
   rel_handle_t h;
+  /* err/got/buf alias the shared rel_scratch under T64_STORE_SEQ — see the
+   * comment on rel_scratch_buf/got/err in bbs/rel.h. */
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define got rel_scratch_got
+#define buf rel_scratch_buf
+#else
+  bbs_err_t err;
   u8 got;
   u8 buf[RECORD_SIZE_DOOR];
+#endif
 
   if (id == 0 || id > DOORS_MAX) {
     return BBS_EBADARG;
@@ -193,6 +201,11 @@ bbs_err_t door_by_id(u8 id, door_record_t *out, u8 device) {
 
   return BBS_OK;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef got
+#undef buf
+#endif
 
 bbs_err_t door_by_key(char key, door_record_t *out, u8 device) {
   bbs_err_t err;
@@ -239,9 +252,14 @@ bbs_err_t door_by_key(char key, door_record_t *out, u8 device) {
 }
 
 bbs_err_t door_delete(u8 id, u8 device) {
-  bbs_err_t err;
   rel_handle_t h;
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define buf rel_scratch_buf
+#else
+  bbs_err_t err;
   u8 buf[RECORD_SIZE_DOOR];
+#endif
 
   if (id == 0 || id > DOORS_MAX) {
     return BBS_EBADARG;
@@ -261,15 +279,24 @@ bbs_err_t door_delete(u8 id, u8 device) {
   /* Write all-zero record; id byte 0 = 0 marks the slot as empty. */
   memset(buf, 0, RECORD_SIZE_DOOR);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_DOOR);
-  rel_close(h);
+  err = rel_close_keep(h, err);
 
   return err;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef buf
+#endif
 
 bbs_err_t door_save(const door_record_t *rec, u8 device) {
-  bbs_err_t err;
   rel_handle_t h;
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define buf rel_scratch_buf
+#else
+  bbs_err_t err;
   u8 buf[RECORD_SIZE_DOOR];
+#endif
 
   if (!rec || rec->id == 0 || rec->id > DOORS_MAX) {
     return BBS_EBADARG;
@@ -288,7 +315,11 @@ bbs_err_t door_save(const door_record_t *rec, u8 device) {
 
   door_pack(rec, buf);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_DOOR);
-  rel_close(h);
+  err = rel_close_keep(h, err);
 
   return err;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef buf
+#endif

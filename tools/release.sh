@@ -134,6 +134,8 @@ fi
 
 echo -e "${BLUE}Cleaning and building...${NC}"
 make -C "$ROOT" clean && make -C "$ROOT" all && make -C "$ROOT" disk
+echo -e "${BLUE}Building the SoftIEC (T64_STORE_SEQ) half...${NC}"
+make -C "$ROOT" c64-siec && make -C "$ROOT" editor-siec
 echo ""
 
 # --- Verify build outputs ---
@@ -142,15 +144,52 @@ BOOT_PRG="$ROOT/build/c64/BOOT-${VERSION}.prg"
 CONFIGURE_PRG="$ROOT/build/c64/CONFIGURE-${VERSION}.prg"
 DISK_IMG="$ROOT/build/c64/TURBO64-${VERSION}.d81"
 BLANK_DISK="$ROOT/data/blank-disk.d81"
+DOOR_PRG="$ROOT/build/c64/FORTUNE.prg"
 
-for f in "$BOOT_PRG" "$CONFIGURE_PRG" "$DISK_IMG" "$BLANK_DISK"; do
+SIEC_DIR="$ROOT/build/c64/siec"
+# BOOT-SIEC / CONFIGURE-SIEC are fixed, version-independent names (see
+# Makefile) — unlike BOOT_PRG/CONFIGURE_PRG above, they do not carry
+# $VERSION. The version is still compiled in and shown on the boot screen.
+BOOT_SIEC_PRG="$SIEC_DIR/BOOT-SIEC.prg"
+CONFIGURE_SIEC_PRG="$SIEC_DIR/CONFIGURE-SIEC.prg"
+SIEC_OVERLAYS=(ovl_boot.prg ovl_wfc.prg ovl_msgs.prg ovl_doors.prg ovl_files.prg ovl_zmodem.prg ovl_auth.prg)
+
+MIGRATE_TOOL="$ROOT/tools/migrate-d81.py"
+VERSION_HEADER="$ROOT/include/bbs/version.h"
+
+for f in "$BOOT_PRG" "$CONFIGURE_PRG" "$DISK_IMG" "$BLANK_DISK" "$DOOR_PRG" \
+         "$BOOT_SIEC_PRG" "$CONFIGURE_SIEC_PRG" "$MIGRATE_TOOL" "$VERSION_HEADER"; do
     if [ ! -f "$f" ]; then
         echo -e "${RED}ERROR: Missing build output: $f${NC}" >&2
         exit 1
     fi
 done
+for ovl in "${SIEC_OVERLAYS[@]}"; do
+    if [ ! -f "$SIEC_DIR/$ovl" ]; then
+        echo -e "${RED}ERROR: Missing SIEC overlay: $SIEC_DIR/$ovl${NC}" >&2
+        exit 1
+    fi
+done
 
 # --- Stage release assets ---
+#
+# The archive mirrors the repo's own relative layout for the SoftIEC half
+# (tools/migrate-d81.py, include/bbs/version.h, build/c64/siec/*,
+# build/c64/FORTUNE.prg) rather than flattening it. That is what lets a
+# SysOp run the exact command tools/deploy.sh uses on real hardware,
+# unzip-and-cd, with zero extra flags:
+#
+#   python3 tools/migrate-d81.py TURBO64-<ver>.d81 siec-tree \
+#       --base /USB1/TURBO64 --device 11
+#
+# migrate-d81.py's own defaults (--siec-build-dir build/c64/siec,
+# --door-build-dir build/c64) then resolve correctly with no path surgery,
+# and there is only one documented invocation to keep in sync instead of a
+# second "for the zip" variant. migrate-d81.py copies both BOOT-SIEC.prg and
+# CONFIGURE-SIEC.prg into the tree automatically — no manual copy step.
+# include/bbs/version.h ships alongside for reference (the compiled-in
+# version shown on the boot screen); migrate-d81.py no longer reads it,
+# since the SIEC binary names are fixed and version-independent.
 
 RELEASE_DIR="$ROOT/build/release"
 rm -rf "$RELEASE_DIR"
@@ -162,15 +201,26 @@ cp "$CONFIGURE_PRG" "$RELEASE_DIR/CONFIGURE-${VERSION}.prg"
 cp "$BLANK_DISK"    "$RELEASE_DIR/BOARDS-${VERSION}.d81"
 
 # Storage diagnostics are deliberately NOT shipped. They are developer tools,
-# two of them (WIPE, CLEAN) delete files, and dropping eight extra PRGs beside
+# two of them (WIPE, CLEAN) delete files, and dropping extra PRGs beside
 # BOOT and CONFIGURE only obscures what a SysOp is meant to run. Build them
 # from source with `make diag` when they are actually needed.
+
+mkdir -p "$RELEASE_DIR/tools" "$RELEASE_DIR/include/bbs" \
+         "$RELEASE_DIR/build/c64/siec"
+cp "$MIGRATE_TOOL"    "$RELEASE_DIR/tools/migrate-d81.py"
+cp "$VERSION_HEADER"  "$RELEASE_DIR/include/bbs/version.h"
+cp "$DOOR_PRG"        "$RELEASE_DIR/build/c64/FORTUNE.prg"
+cp "$BOOT_SIEC_PRG"       "$RELEASE_DIR/build/c64/siec/"
+cp "$CONFIGURE_SIEC_PRG"  "$RELEASE_DIR/build/c64/siec/"
+for ovl in "${SIEC_OVERLAYS[@]}"; do
+    cp "$SIEC_DIR/$ovl" "$RELEASE_DIR/build/c64/siec/"
+done
 
 sed "s/__VERSION__/$VERSION/g" "$ROOT/data/release/file_id.diz.tmpl" > "$RELEASE_DIR/FILE_ID.DIZ"
 sed "s/__VERSION__/$VERSION/g" "$ROOT/data/release/readme.txt.tmpl" > "$RELEASE_DIR/README.txt"
 
 echo -e "${GREEN}Release assets staged:${NC}"
-ls -1 "$RELEASE_DIR"
+(cd "$RELEASE_DIR" && find . -type f | LC_ALL=C sort)
 echo ""
 
 # --- Create ZIP archive ---
@@ -179,14 +229,7 @@ ZIP_FILE="$RELEASE_DIR/TURBO64-${VERSION}.zip"
 echo -e "${BLUE}Creating ZIP archive...${NC}"
 (
     cd "$RELEASE_DIR"
-    zip -q "TURBO64-${VERSION}.zip" \
-        "TURBO64-${VERSION}.d81" \
-        "BOOT-${VERSION}.prg" \
-        "CONFIGURE-${VERSION}.prg" \
-        "BOARDS-${VERSION}.d81" \
-        "FILE_ID.DIZ" \
-        "README.txt" \
-        $(cd "$RELEASE_DIR" && ls *.prg 2>/dev/null | grep -vE "^(BOOT|CONFIGURE)-" | tr '\n' ' ')
+    zip -q -r "TURBO64-${VERSION}.zip" . -x "TURBO64-${VERSION}.zip"
 )
 
 # --- Release notes ---

@@ -17,5 +17,12 @@
 #ifndef T64_DRIVE_DOORS
 #define T64_DRIVE_DOORS   10  /* door PRG files */
 #endif
+#ifndef T64_DRIVE_GFILES
+#define T64_DRIVE_GFILES  T64_DRIVE_SYSTEM  /* default: alongside system files */
+#endif
+
+#ifndef T64_DRIVE_SOFTIEC
+#define T64_DRIVE_SOFTIEC 11  /* Ultimate Software IEC virtual drive */
+#endif
 
 #endif /* BBS_DRIVES_H */

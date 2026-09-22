@@ -182,10 +182,18 @@ bbs_err_t board_by_index(u8 n, board_dir_record_t *out_rec, u8 device) {
 }
 
 bbs_err_t board_by_id(u8 id, board_dir_record_t *out_rec, u8 device) {
-  bbs_err_t err;
   rel_handle_t h;
+  /* err/got/buf alias the shared rel_scratch under T64_STORE_SEQ — see the
+   * comment on rel_scratch_buf/got/err in bbs/rel.h. */
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define got rel_scratch_got
+#define buf rel_scratch_buf
+#else
+  bbs_err_t err;
   u8 got;
   u8 buf[RECORD_SIZE_BOARD_DIR];
+#endif
 
   if (id == 0 || id > CFG_MAX_BOARDS) {
     return BBS_EBADARG;
@@ -226,11 +234,21 @@ bbs_err_t board_by_id(u8 id, board_dir_record_t *out_rec, u8 device) {
 
   return BBS_OK;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef got
+#undef buf
+#endif
 
 bbs_err_t board_save(const board_dir_record_t *rec, u8 device) {
-  bbs_err_t err;
   rel_handle_t h;
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define buf rel_scratch_buf
+#else
+  bbs_err_t err;
   u8 buf[RECORD_SIZE_BOARD_DIR];
+#endif
 
   if (!rec || rec->id == 0 || rec->id > CFG_MAX_BOARDS) {
     return BBS_EBADARG;
@@ -249,10 +267,14 @@ bbs_err_t board_save(const board_dir_record_t *rec, u8 device) {
 
   board_pack(rec, buf);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_BOARD_DIR);
-  rel_close(h);
+  err = rel_close_keep(h, err);
 
   return err;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef buf
+#endif
 
 bbs_err_t board_create(const char *title, u8 read_level, u8 write_level, u8 device, u8 *out_id) {
   bbs_err_t err;

@@ -848,8 +848,25 @@ bbs_err_t session_step(session_t *s) {
           session_emit(s, ": ");
           break;
         }
-        /* Both handle and password collected; attempt login */
-        err = auth_prompt_login(s);
+        /* Both handle and password collected; attempt login.
+         * auth_prompt_login lives in OVL_AUTH (bank 7) — load it over the
+         * overlay zone, then reload OVL_WFC (spy view code) before doing
+         * anything else, same pattern as action_list_boards/OVL_MSGS.
+         *
+         * auth_prompt_login() lives IN the overlay just requested — on a
+         * failed load it must not run (that would execute whatever is
+         * still at $9700). Falling through with err=BBS_EIO reuses the
+         * existing "bad login" branch below: it already rate-limits and
+         * never distinguishes handle vs password, so folding a load
+         * failure into it needs no new disconnect logic. */
+        if (disk_load_overlay(P"OVL_AUTH") == BBS_OK) {
+          wfc.ovl_wfc_loaded = FALSE;
+          err = auth_prompt_login(s);
+        } else {
+          session_emit(s, "\r\nERROR: OVL_AUTH LOAD FAILED.\r\n");
+          err = BBS_EIO;
+        }
+        wfc_reload();
         if (err == BBS_OK) {
           /* Login successful */
           sess_color(s, 0x9f, "\x1b[36m");
@@ -1195,13 +1212,13 @@ bbs_err_t session_display_file(const session_t *s, char prefix, const char *base
   session_refresh_timeleft(s);   /* keep %TL current for this render */
 
   disk_build_term_filename(&names, prefix, base_name, s->term_mode, s->term_width);
-  err = cfg_send_drive_init(bbs_cfg.device_system, bbs_cfg.init_system);
+  err = cfg_send_drive_init(bbs_cfg.device_gfiles, bbs_cfg.init_gfiles);
   if (err != BBS_OK) {
     return err;
   }
 
   for (i = 0; i < 4; i++) {
-    err = disk_open(bbs_cfg.device_system, bbs_cfg.drive_system, names.names[i], DISK_READ);
+    err = disk_open(bbs_cfg.device_gfiles, bbs_cfg.drive_gfiles, names.names[i], DISK_READ);
     if (err != BBS_OK) {
       continue;
     }

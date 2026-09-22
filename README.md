@@ -6,13 +6,63 @@
 
 TURBO/64 BBS is a Commodore 64 BBS written in C for the [Oscar64 compiler](https://github.com/drmortalwombat/oscar64). It targets native `.prg` output for real hardware (including C64 Ultimate) and VICE emulation.
 
-**Current status:** v0.3.0 — login/registration, terminal translation (PETSCII, ANSI/CP437, ASCII), bulletin boards, door programs (run external Oscar64 plug-ins), Punter and Zmodem file transfers, and the "Configure" editor are working.
+**Current status:** v0.4.0 — login/registration, terminal translation (PETSCII, ANSI/CP437, ASCII), bulletin boards, door programs (run external Oscar64 plug-ins), Punter and Zmodem file transfers, and the "Configure" editor are working. As of v0.4.0, T/64 ships **two builds** — see [Which Build Do I Want?](#which-build-do-i-want) below.
 
 Not working: Private mail, SysOp chat, polls/voting, and lots more remain stubbed.
 
-> **Not a developer?** Download `TURBO64-<ver>.d81` from the [latest GitHub release](../../releases/latest), mount it on your C64 Ultimate or in Vice, and jump straight to First-Time Setup below.
+> **Not a developer?** Download the release zip from the [latest GitHub release](../../releases/latest), pick the build for your hardware below, and jump straight to First-Time Setup.
 
 > 💬 **Join the community on [Discord](https://discord.gg/AkKC2gKKuH)** — for support, feature ideas, or just to chat C64 BBSing.
+
+---
+
+## Which Build Do I Want?
+
+T/64 v0.4.0 ships two binaries built from the same source, differing only in how they
+store the user/message/file/door database:
+
+| Your hardware | Build | Media |
+|---|---|---|
+| C64 Ultimate, **Software IEC** | `BOOT-SIEC.prg` / `CONFIGURE-SIEC.prg` | a folder on the Ultimate's USB stick or SD card — **no disk image mounted** |
+| sd2iec / uIEC / 1571 / 1581 / emulated 1581 (incl. VICE) | `BOOT-0.4.0.prg` / `CONFIGURE-0.4.0.prg` | `TURBO64-0.4.0.d81` |
+
+The SIEC binaries deliberately have fixed, version-independent names — CBM filenames
+top out at 16 characters, and `CONFIGURE-0.4.0-SIEC` (20) could never load. The version
+isn't lost: it's compiled in and shown on the boot screen.
+
+If you're not sure which one you have: if you access your Ultimate's storage as a mounted
+USB/SD folder tree through its web UI or menu (not as a `.d81` you attach to a virtual
+drive), you're on SoftIEC and want the `-SIEC` build. Everyone else — real 1541/1571/1581
+hardware, sd2iec-class devices, or the C64 Ultimate's own **emulated** 1581 drives — wants
+the plain build and the `.d81`.
+
+**The SIEC build has two hard requirements:**
+
+1. **An REU enabled** in the Ultimate's menu. SIEC records are REU-backed SEQ files —
+   without an REU, every database operation (login, message boards, file areas, doors)
+   fails outright. This is stricter than the REL build, which merely degrades without one.
+2. **A folder tree produced by [`tools/migrate-d81.py`](tools/migrate-d81.py)**, not a bare
+   directory of PRGs. SoftIEC has no REL file support, so the SIEC build reinterprets the
+   whole storage model as SEQ files inside per-section folders (`SYSTEM/`, `MSGS/`,
+   `FILES/`, `DOORS/`); `migrate-d81.py` is what builds that tree, seeded from the `.d81`'s
+   user database and gfiles. See **[Setting up the SoftIEC build](#setting-up-the-softiec-build)**
+   below.
+
+**Known gaps in the SIEC build (not present in the REL build):**
+
+- **Free-space displays read 0.** SoftIEC reports no block count, so anywhere T/64 would
+  normally show free space on a device, it shows 0 instead. This is cosmetic — writes
+  still succeed or fail on their own merits.
+- **One flat 16-character namespace per section.** Every SIEC section folder (`SYSTEM/`,
+  `MSGS/`, `FILES/`, `DOORS/`) is a single flat directory with CBM's usual 16-character
+  filename limit — there's no per-board or per-area subfolder the way a `.d81` partition
+  scheme might suggest. This is enough for the record and content files T/64 itself
+  manages, but keep it in mind if you're naming uploaded files or door PRGs.
+
+Both builds are otherwise the same BBS — same menus, same features, same session logic.
+See [Storage Devices & Partitions](#storage-devices--partitions) for the REL build's
+device/partition model, and [Setting up the SoftIEC build](#setting-up-the-softiec-build)
+for the SIEC equivalent.
 
 ---
 
@@ -56,9 +106,14 @@ Not working: Private mail, SysOp chat, polls/voting, and lots more remain stubbe
 make all          # compile BOOT and CONFIGURE PRGs
 make disk         # assemble TURBO64-<ver>.d81 from build output + data/
 make disk-with-users  # same, but fetches live user database from C64U first
+make c64-siec     # compile BOOT-SIEC.prg (SoftIEC: SEQ+REU records)
+make editor-siec  # compile CONFIGURE-SIEC.prg
 ```
 
-Output: `build/c64/BOOT-<ver>.prg`, `build/c64/CONFIGURE-<ver>.prg`, `build/c64/TURBO64-<ver>.d81`
+Output: `build/c64/BOOT-<ver>.prg`, `build/c64/CONFIGURE-<ver>.prg`, `build/c64/TURBO64-<ver>.d81`,
+`build/c64/siec/BOOT-SIEC.prg`, `build/c64/siec/CONFIGURE-SIEC.prg` (fixed names — the
+compiled-in version still shows on the boot screen). The SIEC build has
+no disk-image target — see [Setting up the SoftIEC build](#setting-up-the-softiec-build).
 
 See [`tools/README.md`](tools/README.md) for the full reference.
 
@@ -71,7 +126,7 @@ See [`tools/README.md`](tools/README.md) for the full reference.
 On the C64, mount `TURBO64-<ver>.D81` on device 8 and load CONFIGURE:
 
 ```
-LOAD "CONFIGURE-0.3.0",8
+LOAD "CONFIGURE-0.4.0",8
 RUN
 ```
 
@@ -134,14 +189,14 @@ See [Storage Devices & Partitions](#storage-devices--partitions) for which devic
 Outside CONFIGURE, on the C64:
 
 ```
-LOAD "BOOT-0.3.0",8
+LOAD "BOOT-0.4.0",8
 RUN
 ```
 
 Expected startup output:
 
 ```
-TURBO/64 BBS V0.3.0
+TURBO/64 BBS V0.4.0
 
 LOADING SETUP...
   BBS: <your bbs name>
@@ -304,6 +359,93 @@ Start with `PTEST` — it answers in seconds whether a device supports partition
   RTC through the cartridge port. It does not read the clock from an sd2iec or CMD drive
   even when one is fitted, so on a plain C64 you are prompted for the time at every boot.
 - **Free space is not reported** for devices that do not return a block count.
+
+---
+
+## Setting up the SoftIEC build
+
+The SIEC build (`BOOT-SIEC.prg` / `CONFIGURE-SIEC.prg` — fixed, version-independent
+names; see [Which Build Do I Want?](#which-build-do-i-want)) never mounts a disk
+image. Instead it reads and writes SEQ files inside a folder tree on the Ultimate's own
+USB/SD storage, addressed through Software IEC (device 11 by default). That tree has to
+exist and be laid out correctly before the SIEC build will boot — building it is what
+`tools/migrate-d81.py` does.
+
+**Requirements before you start:**
+
+- An REU enabled in the Ultimate's menu (Settings → REU/GeoRAM). Without one, SIEC builds
+  fail every database operation.
+- `python3` and VICE's `c1541` tool on the machine you run the migration from (`c1541`
+  ships with VICE; `brew install vice` on macOS, or use the copy already required for
+  disk-image development).
+
+**What's in the release archive for this:**
+
+```
+TURBO64-0.4.0.d81            the REL disk image — used here only as a data SOURCE
+tools/migrate-d81.py          the migration tool
+include/bbs/version.h         the compiled-in version (shown on the boot screen);
+                               SIEC binary names are fixed and don't need this to build
+build/c64/FORTUNE.prg         the example door (shared between both builds)
+build/c64/siec/
+  BOOT-SIEC.prg
+  CONFIGURE-SIEC.prg
+  ovl_boot.prg  ovl_wfc.prg  ovl_msgs.prg  ovl_doors.prg  ovl_files.prg
+  ovl_zmodem.prg  ovl_auth.prg
+```
+
+Yes, the SIEC install still needs the `.d81` — not to mount it, but as the **source** of
+the user database, access levels, and gfiles that `migrate-d81.py` converts into SEQ
+records and copies into the tree it builds. Unzip the release archive keeping this layout
+intact (it mirrors the repo's own `tools/` / `include/` / `build/c64/` paths on purpose),
+`cd` into the unzipped folder, and run:
+
+```bash
+python3 tools/migrate-d81.py TURBO64-0.4.0.d81 siec-tree \
+    --base /USB1/TURBO64 --device 11
+```
+
+- `siec-tree` — a new, empty output directory; the tool refuses to write into one that
+  already has files in it.
+- `--base` — the absolute SoftIEC path the tree will live at once it's on the stick.
+  `/USB1/...` for a USB stick, `/SD/...` for the SD card.
+- `--device` — the SoftIEC device number as T/64 will see it (11 is the Ultimate default).
+
+This produces `siec-tree/` containing `config.seq`, `ovl_boot.prg`, `BOOT-SIEC.prg`, and
+`CONFIGURE-SIEC.prg` at its root, and `SYSTEM/`, `MSGS/`, `FILES/`, `DOORS/` folders
+holding the remaining overlays, the migrated records and gfiles (written as lowercase
+`usr log.seq`, `callers.seq`, `g.login.seq` and so on — the spelling SoftIEC itself uses,
+so the C64's own saves overwrite them instead of creating a second copy), and the example
+door. `migrate-d81.py` copies both SIEC binaries automatically — there is no manual copy
+step for CONFIGURE.
+
+> **Upgrading a tree made by an earlier build:** those files were written without the
+> `.seq` extension. On hardware the C64 *reads* such a file but its saves create
+> `callers.seq` beside it, so a plain-named `USR LOG` or `CALLERS` on an older tree is the
+> live data. `tools/deploy.sh siec --clean --execute` renames them to the `.seq` spelling
+> (never deletes them), keeps every existing data file rather than uploading the seed over
+> it, and stops if it finds both spellings of one file so you can pick the right one.
+
+Then copy the entire contents of `siec-tree/` onto the stick or card at the `--base` path
+you gave above (Ultimate web UI, FTP, or however you move files onto its storage), so that
+`siec-tree/SYSTEM` becomes `/USB1/TURBO64/SYSTEM`, and so on. **Do not mount anything** on
+device 11 at boot — the whole point of SoftIEC is that there is no image to attach.
+
+Boot with:
+```
+LOAD"BOOT-SIEC",11
+RUN
+```
+
+To run the SysOp editor over SoftIEC instead:
+```
+LOAD"CONFIGURE-SIEC",11
+RUN
+```
+
+If the BBS reports section-folder or REU errors at boot, re-check the REU is enabled and
+that the tree landed at exactly the `--base` path you migrated for — a `CONFIG` in the
+wrong place is read silently and falls back to compile-time defaults rather than erroring.
 
 ---
 
@@ -678,7 +820,7 @@ Device 9 is not mounted or has no boards configured. Mount `BOARDS-<ver>.D81` on
 
 ---
 
-## What Is Not Yet Implemented (v0.3.0)
+## What Is Not Yet Implemented (v0.4.0)
 
 The following features return a placeholder message:
 

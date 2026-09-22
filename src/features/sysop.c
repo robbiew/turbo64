@@ -57,7 +57,6 @@
 #include "bbs/hal/clock.h"
 #include "bbs/version.h"
 #include "bbs/spy80.h"
-#include <c64/kernalio.h>
 #include "bbs/overlay.h"
 
 
@@ -95,18 +94,30 @@ wfc_state_t wfc;
 
 /* ── WFC overlay load helper + core stubs ──────────────────────────────────
  * OVL_WFC (bank 2) shares $9D80-$BFFF with OVL_MSGS (bank 1).
- * load_ovl_wfc() is a no-op when the overlay is already resident.          */
-static void load_ovl_wfc(void)
+ * load_ovl_wfc() is a no-op when the overlay is already resident.
+ *
+ * On failure, ovl_wfc_loaded is left FALSE (not forced TRUE — that was the
+ * bug: a discarded load error let every caller run into whatever stale
+ * overlay still sat at $9700) so the next WFC call retries the load. The
+ * four thin wrappers below all skip their _impl() call when the load
+ * fails, since that call would otherwise execute into the unloaded/wrong
+ * overlay region. This is the local sysop console (no session to report
+ * to), so the error goes straight to the screen via printf — WFC's own
+ * draw code does the same (see wfc_display_impl). */
+static bbs_err_t load_ovl_wfc(void)
 {
     if (!wfc.ovl_wfc_loaded) {
-        krnio_setnam(P"OVL_WFC");
-        krnio_load(1, bbs_cfg.device_system, 1);
+        if (disk_load_overlay(P"OVL_WFC") != BBS_OK) {
+            printf("\nERROR: OVL_WFC LOAD FAILED.\n");
+            return BBS_EIO;
+        }
         wfc.ovl_wfc_loaded = TRUE;
     }
+    return BBS_OK;
 }
-void       wfc_init(void)      { load_ovl_wfc(); wfc_init_impl();          }
-void       wfc_display(void)   { load_ovl_wfc(); wfc_display_impl();       }
-bbs_err_t  wfc_update(void)    { load_ovl_wfc(); return wfc_update_impl(); }
+void       wfc_init(void)      { if (load_ovl_wfc() == BBS_OK) wfc_init_impl();    }
+void       wfc_display(void)   { if (load_ovl_wfc() == BBS_OK) wfc_display_impl(); }
+bbs_err_t  wfc_update(void)    { bbs_err_t e = load_ovl_wfc(); return (e == BBS_OK) ? wfc_update_impl() : e; }
 void       wfc_reload(void)    { load_ovl_wfc();                          }
 
 /* ── WFC overlay: draw/render/RTC/datetime — loaded on demand ─────────── */
@@ -806,6 +817,12 @@ static bool_t cal_wait_tenth(void)
     u8  t0 = TOD_10THS;
     u16 guard = 0;
     while (TOD_10THS == t0)
+        /* The u16 wrap back to 0 after 65536 iterations IS the escape: a
+         * stopped TOD would otherwise spin here forever and hang the boot.
+         * cppcheck reports this as always-false because its value analysis
+         * does not model unsigned wraparound (confirmed: the same finding
+         * appears under --platform=avr8, so it is not an int-width artefact). */
+        /* cppcheck-suppress knownConditionTrueFalse */
         if (++guard == 0u) return FALSE;
     return TRUE;
 }
@@ -813,8 +830,7 @@ static bool_t cal_wait_tenth(void)
 /* Measure the TOD feed. Returns 50, 60, or 0 if it could not be identified. */
 static u8 tod_calibrate(void)
 {
-    u16 a, b, ticks;
-    u8  i;
+    u16 ticks;
 
     CIA2_CRA   = 0x00;
     CIA2_CRB   = 0x00;
@@ -827,11 +843,13 @@ static u8 tod_calibrate(void)
 
     ticks = 0;
     if (cal_wait_tenth()) {
+        u16 a;
+        u8  i;
         a = cal_tb_read();
         for (i = 0; i < CAL_TENTHS; i++)
             if (!cal_wait_tenth()) break;
         if (i == CAL_TENTHS) {
-            b = cal_tb_read();
+            u16 b = cal_tb_read();
             ticks = (u16)(a - b);   /* counts down; u16 wrap makes this right */
         }
     }

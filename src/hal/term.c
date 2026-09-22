@@ -161,10 +161,10 @@ static bool_t _term_show_menu(const session_t *s, char *prompt_buf, u8 prompt_le
     bbs_err_t err;
     bool_t prev_had_cr;
 
-    err = cfg_send_drive_init(bbs_cfg.device_system, bbs_cfg.init_system);
+    err = cfg_send_drive_init(bbs_cfg.device_gfiles, bbs_cfg.init_gfiles);
     if (err != BBS_OK) goto fallback;
 
-    err = disk_open(bbs_cfg.device_system, bbs_cfg.drive_system, "G.TERM", DISK_READ);
+    err = disk_open(bbs_cfg.device_gfiles, bbs_cfg.drive_gfiles, "G.TERM", DISK_READ);
     if (err != BBS_OK) goto fallback;
 
     got = disk_gets(prev, sizeof(line_a));

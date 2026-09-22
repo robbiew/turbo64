@@ -81,10 +81,18 @@ static bool_t fentry_is_deleted(const file_entry_record_t *r)
 bbs_err_t fentry_count(u8 area_id, u8 device, u8 *out_count)
 {
     rel_handle_t h;
-    u8 buf[RECORD_SIZE_FILE_ENTRY], got;
     u16 n;
-    bbs_err_t err;
     file_entry_record_t r;
+    /* err/got/buf alias the shared rel_scratch under T64_STORE_SEQ — see the
+     * comment on rel_scratch_buf/got/err in bbs/rel.h. */
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define got rel_scratch_got
+#define buf rel_scratch_buf
+#else
+    u8 buf[RECORD_SIZE_FILE_ENTRY], got;
+    bbs_err_t err;
+#endif
 
     *out_count = 0;
     err = fentry_open(area_id, device, &h);
@@ -102,12 +110,23 @@ bbs_err_t fentry_count(u8 area_id, u8 device, u8 *out_count)
     rel_close(h);
     return (err == BBS_OK) ? BBS_OK : err;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef got
+#undef buf
+#endif
 
 bbs_err_t fentry_by_recnum(u8 area_id, u8 recnum, file_entry_record_t *out,
                             u8 device)
 {
     rel_handle_t h;
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define got rel_scratch_got
+#define buf rel_scratch_buf
+#else
     bbs_err_t err;
+#endif
 
     if (!recnum || !out) return BBS_EBADARG;
     err = fentry_open(area_id, device, &h);
@@ -115,7 +134,9 @@ bbs_err_t fentry_by_recnum(u8 area_id, u8 recnum, file_entry_record_t *out,
 
     err = rel_position(h, recnum);
     if (err == BBS_OK) {
+#ifndef T64_STORE_SEQ
         u8 buf[RECORD_SIZE_FILE_ENTRY], got;
+#endif
         memset(buf, 0, RECORD_SIZE_FILE_ENTRY);
         err = rel_read(h, buf, RECORD_SIZE_FILE_ENTRY, &got);
         if (err == BBS_OK && got >= REC_MIN) {
@@ -128,14 +149,26 @@ bbs_err_t fentry_by_recnum(u8 area_id, u8 recnum, file_entry_record_t *out,
     rel_close(h);
     return err;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef got
+#undef buf
+#endif
 
 bbs_err_t fentry_add(u8 area_id, const file_entry_record_t *rec, u8 device)
 {
     rel_handle_t h;
-    u8 buf[RECORD_SIZE_FILE_ENTRY], got, slot = 0;
+    u8 slot = 0;
     u16 n;
-    bbs_err_t err;
     file_entry_record_t r;
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define got rel_scratch_got
+#define buf rel_scratch_buf
+#else
+    u8 buf[RECORD_SIZE_FILE_ENTRY], got;
+    bbs_err_t err;
+#endif
 
     if (!rec) return BBS_EBADARG;
     err = fentry_open(area_id, device, &h);
@@ -145,6 +178,11 @@ bbs_err_t fentry_add(u8 area_id, const file_entry_record_t *rec, u8 device)
     for (n = 1; n <= 255; n++) {
         memset(buf, 0, RECORD_SIZE_FILE_ENTRY);
         err = rel_read(h, buf, RECORD_SIZE_FILE_ENTRY, &got);
+        /* Past the SEQ backend's high-water mark IS a free slot — there is
+         * nothing there yet, which is exactly what we're scanning for. REL's
+         * rel_read() never returns BBS_ENOTFOUND mid-scan (only got<REC_MIN,
+         * handled below), so this case is inert on that backend. */
+        if (err == BBS_ENOTFOUND) { slot = n; break; }
         if (err != BBS_OK) break;
         if (got < REC_MIN) { slot = n; break; }
         fentry_unpack(&r, buf);
@@ -162,24 +200,40 @@ bbs_err_t fentry_add(u8 area_id, const file_entry_record_t *rec, u8 device)
     rel_close(h);
     return err;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef got
+#undef buf
+#endif
 
 bbs_err_t fentry_save(u8 area_id, const file_entry_record_t *rec, u8 device)
 {
     rel_handle_t h;
+#ifdef T64_STORE_SEQ
+#define err rel_scratch_err
+#define buf rel_scratch_buf
+#else
     bbs_err_t err;
+#endif
 
     if (!rec || !rec->id) return BBS_EBADARG;
     err = fentry_open(area_id, device, &h);
     if (err != BBS_OK) return err;
     err = rel_position(h, rec->id);
     if (err == BBS_OK) {
+#ifndef T64_STORE_SEQ
         u8 buf[RECORD_SIZE_FILE_ENTRY];
+#endif
         fentry_pack(rec, buf);
         err = rel_write(h, buf, RECORD_SIZE_FILE_ENTRY);
     }
     rel_close(h);
     return err;
 }
+#ifdef T64_STORE_SEQ
+#undef err
+#undef buf
+#endif
 
 bbs_err_t fentry_delete(u8 area_id, u8 recnum, u8 device)
 {
