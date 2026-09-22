@@ -135,6 +135,15 @@ bbs_err_t rel_write(rel_handle_t h, const void *buf, u8 record_size)
     return (r == (int)record_size) ? BBS_OK : BBS_EIO;
 }
 
+/* Close after a write and keep the FIRST error: on the SEQ backend the disk
+ * write happens in rel_close(), so a save path that returned rel_write()'s
+ * result alone reported success even when the flush failed (PR #25 review). */
+bbs_err_t rel_close_keep(rel_handle_t h, bbs_err_t err)
+{
+    bbs_err_t ce = rel_close(h);
+    return (err != BBS_OK) ? err : ce;
+}
+
 bbs_err_t rel_close(rel_handle_t h)
 {
     if (!s_open) return BBS_OK;

@@ -64,6 +64,40 @@ check("classify.access", mig.classify_entry("access", "seq"),
 check("classify.callers", mig.classify_entry("callers", "seq"),
       ("CALLERS", "SYSTEM", None))
 
+# --- host_name: the on-stick spelling of every migrated data file ---------
+
+# Must be exactly what SoftIEC writes for "<NAME>,S,W" (lowercase + ".seq"):
+# an extensionless PC-written copy survives the C64's scratch and shadows
+# every later save (measured on hardware — see the module docstring).
+check("host_name.callers", mig.host_name("CALLERS"), "callers.seq")
+check("host_name.space", mig.host_name("USR LOG"), "usr log.seq")
+check("host_name.dotted", mig.host_name("B3.IDX"), "b3.idx.seq")
+check("host_name.gfile", mig.host_name("g.login 1 80"), "g.login 1 80.seq")
+
+# --- merge_config: the image's settings survive, DEV_* are replaced -------
+
+_specs = {"SYSTEM": "11;/USB1/T/SYSTEM", "MSGS": "11;/USB1/T/MSGS",
+          "FILES": "11;/USB1/T/FILES", "DOORS": "11;/USB1/T/DOORS"}
+_src = b"BBS_NAME=A New T/64 BBS\nSYSOP_NAME=SYSOP\nDEV_SYSTEM=8\nDEV_MSGS=9\nBAUD_RATE=38400\n"
+_out = mig.merge_config(_src, _specs)
+check("merge.cr_terminated", _out.endswith("\r") and "\n" not in _out, True)
+_lines = _out.rstrip("\r").split("\r")
+check("merge.settings_kept",
+      [l for l in _lines if not l.startswith("DEV_")],
+      ["BBS_NAME=A New T/64 BBS", "SYSOP_NAME=SYSOP", "BAUD_RATE=38400"])
+check("merge.devices_replaced",
+      [l for l in _lines if l.startswith("DEV_")],
+      ["DEV_SYSTEM=11;/USB1/T/SYSTEM", "DEV_MSGS=11;/USB1/T/MSGS",
+       "DEV_FILES=11;/USB1/T/FILES", "DEV_DOORS=11;/USB1/T/DOORS",
+       "DEV_GFILES=11;/USB1/T/SYSTEM"])
+# CR-terminated source (what cfg_save() writes on the C64) parses the same.
+check("merge.cr_source",
+      mig.merge_config(b"BBS_CITY=X\rDEV_FILES=9\r", _specs).split("\r")[0],
+      "BBS_CITY=X")
+# No source config at all still yields a valid device-only CONFIG.
+check("merge.empty_source",
+      mig.merge_config(b"", _specs).count("\r"), 5)
+
 # Message bodies (SEQ, not REL) live alongside their B<n>.IDX in MSGS/.
 check("classify.board_txt", mig.classify_entry("b7.txt", "seq"),
       ("B7.TXT", "MSGS", None))
@@ -97,9 +131,10 @@ with tempfile.TemporaryDirectory() as td:
     }
     os.makedirs(os.path.join(td, "SYSTEM"))
     mig.write_config(td, specs)
-    check("config.at_root", os.path.isfile(os.path.join(td, "CONFIG")), True)
+    check("config.at_root", os.path.isfile(os.path.join(td, "config.seq")), True)
+    check("config.not_extensionless", os.path.isfile(os.path.join(td, "CONFIG")), False)
     check("config.not_in_system",
-          os.path.isfile(os.path.join(td, "SYSTEM", "CONFIG")), False)
+          os.path.isfile(os.path.join(td, "SYSTEM", "config.seq")), False)
 
 
 # --- a missing overlay or binary is reported, not silently skipped --------

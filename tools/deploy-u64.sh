@@ -41,7 +41,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-LOCATION="${LOCATION:-${T64_SD_PATH:-usb0}}"
+LOCATION="${LOCATION:-${T64_SD_PATH:-usb1}}"
 
 case "$LOCATION" in
     bbs)  SD_PATH="/BBS"       ;;

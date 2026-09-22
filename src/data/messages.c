@@ -291,7 +291,7 @@ bbs_err_t msg_index_put(u8 board_id, const msg_index_record_t *rec, u8 device)
 
     msg_pack(rec, buf);
     err = rel_write(h, (const void *)buf, RECORD_SIZE_MSG_IDX);
-    rel_close(h);
+    err = rel_close_keep(h, err);
 
     if (err != BBS_OK) return err;
 

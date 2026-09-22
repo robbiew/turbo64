@@ -267,7 +267,7 @@ bbs_err_t board_save(const board_dir_record_t *rec, u8 device) {
 
   board_pack(rec, buf);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_BOARD_DIR);
-  rel_close(h);
+  err = rel_close_keep(h, err);
 
   return err;
 }

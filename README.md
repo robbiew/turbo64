@@ -411,11 +411,20 @@ python3 tools/migrate-d81.py TURBO64-0.4.0.d81 siec-tree \
   `/USB1/...` for a USB stick, `/SD/...` for the SD card.
 - `--device` — the SoftIEC device number as T/64 will see it (11 is the Ultimate default).
 
-This produces `siec-tree/` containing `CONFIG`, `ovl_boot.prg`, `BOOT-SIEC.prg`, and
+This produces `siec-tree/` containing `config.seq`, `ovl_boot.prg`, `BOOT-SIEC.prg`, and
 `CONFIGURE-SIEC.prg` at its root, and `SYSTEM/`, `MSGS/`, `FILES/`, `DOORS/` folders
-holding the remaining overlays, the migrated `USR LOG`/`USR PROF`/`ACCESS`/`CALLERS`
-records, gfiles, and the example door. `migrate-d81.py` copies both SIEC binaries
-automatically — there is no manual copy step for CONFIGURE.
+holding the remaining overlays, the migrated records and gfiles (written as lowercase
+`usr log.seq`, `callers.seq`, `g.login.seq` and so on — the spelling SoftIEC itself uses,
+so the C64's own saves overwrite them instead of creating a second copy), and the example
+door. `migrate-d81.py` copies both SIEC binaries automatically — there is no manual copy
+step for CONFIGURE.
+
+> **Upgrading a tree made by an earlier build:** those files were written without the
+> `.seq` extension. On hardware the C64 *reads* such a file but its saves create
+> `callers.seq` beside it, so a plain-named `USR LOG` or `CALLERS` on an older tree is the
+> live data. `tools/deploy.sh siec --clean --execute` renames them to the `.seq` spelling
+> (never deletes them), keeps every existing data file rather than uploading the seed over
+> it, and stops if it finds both spellings of one file so you can pick the right one.
 
 Then copy the entire contents of `siec-tree/` onto the stick or card at the `--base` path
 you gave above (Ultimate web UI, FTP, or however you move files onto its storage), so that

@@ -18,6 +18,10 @@ sitting beside the current BOOT-SIEC.prg. Getting a remove decision WRONG
 here can destroy a user database, so every rule below defaults to keeping:
 an entry that isn't positively matched by a remove rule is reported
 unrecognized and left alone, never deleted on the assumption it is junk.
+Data files are never removed at all: a tree written by the old migrator
+(extensionless "USR LOG", "CALLERS", ...) has its data files RENAMED to the
+".seq" spelling the C64 uses, and a pair of candidates for one file is
+reported as a CONFLICT that stops the deploy.
 
 Two subcommands:
   classify   pre-upload: decide what's safe to remove before a fresh
@@ -50,7 +54,7 @@ PROBE_SCRATCH_DIRS = {"STRAND"}
 # Never removed under any rule below, regardless of what else matches.
 # Exact names (no suffix variants expected) vs. prefixes (counters/pointers
 # that carry a numeric or .NEW-style suffix written by the BBS itself).
-PROTECTED_EXACT = {"USR LOG", "USR PROF", "ACCESS", "CALLERS", "T64.SIEC"}
+PROTECTED_EXACT = {"USR LOG", "USR PROF", "ACCESS", "CALLERS", "STATUS", "T64.SIEC"}
 PROTECTED_PREFIXES = (
     "syscnt", "USR.PTR", "USR.DAY", "BOARDS", "UDS", "VOTE1", "DOORS",
 )
@@ -65,14 +69,39 @@ OVL_RE = re.compile(r"^ovl_.*\.prg$", re.IGNORECASE)
 SEQ_RE = re.compile(r"^(.*)\.seq$", re.IGNORECASE)
 
 
+def manifest_name(section, name, manifest):
+    """The manifest entry a live file IS (same section, same name ignoring
+    case), or None. Case-insensitive because the stick is FAT and SoftIEC
+    writes its own case: the C64 leaves "BOARDS.seq" where the migration
+    wrote "boards.seq", and an FTP upload of the latter replaces the former
+    in place — they are one file, not a collision."""
+    lname = name.lower()
+    for msection, mname in manifest:
+        if msection == section and mname.lower() == lname:
+            return mname
+    return None
+
+
+def _cbm_key(name):
+    """The CBM name SoftIEC presents a host file under: case-folded, with a
+    trailing ".seq" type marker removed. Two host names with equal keys are
+    the same file to the C64."""
+    m = SEQ_RE.match(name)
+    return (m.group(1) if m else name).lower()
+
+
 def is_protected(name):
-    if name in PROTECTED_EXACT:
+    # Matched on the CBM name (case-folded, ".seq" stripped): "usr log.seq"
+    # as the migration writes it and "USR LOG.seq" as the C64 writes it are
+    # both the user database.
+    key = _cbm_key(name).upper()
+    if key in PROTECTED_EXACT:
         return True
     for prefix in PROTECTED_PREFIXES:
-        if name.upper().startswith(prefix.upper()):
+        if key.startswith(prefix.upper()):
             return True
     for pat in PROTECTED_PATTERNS:
-        if pat.match(name):
+        if pat.match(key):
             return True
     return False
 
@@ -89,9 +118,10 @@ def is_probe_scratch(name):
     return any(upper.startswith(p.upper()) for p in PROBE_SCRATCH_PREFIXES)
 
 
-def classify_entry(section, name, manifest):
-    """Return (decision, reason). decision is one of:
-    REMOVE, KEEP (recognized/protected), KEEP_UNRECOGNIZED.
+def classify_entry(section, name, manifest, live_names=None):
+    """Return (decision, detail). decision is one of: REMOVE, RENAME (detail
+    is the new name), CONFLICT, KEEP (recognized/protected), KEEP_UNRECOGNIZED,
+    SKIP. live_names is the listing of this section, used to spot a twin.
     """
     if section == "ROOT" and name in SECTIONS:
         return ("SKIP", "section directory, not a file")
@@ -101,14 +131,50 @@ def classify_entry(section, name, manifest):
     if name.upper() == "STRAND":
         return ("REMOVE", "probe scratch directory (src-diag/siecprobe.c CD:STRAND)")
 
-    if (section, name) in manifest:
+    if manifest_name(section, name, manifest) is not None:
         return ("KEEP", "part of this deploy")
 
-    m = SEQ_RE.match(name)
-    if m and (section, m.group(1)) in manifest:
-        return ("REMOVE",
-                 f"*.seq collides with deploy file {m.group(1)!r} — SoftIEC "
-                 f"strips the type-marker extension, so which one opens is undefined")
+    # Collision: a live file that SoftIEC presents under the same CBM name as
+    # one this deploy writes, spelled differently (case-folded, ".seq" marker
+    # stripped on both sides). MEASURED on a C64 Ultimate (firmware 1.1.0,
+    # 2026-09-22): the C64 always creates lowercase "<name>.seq"; an
+    # extensionless file only ever comes from the PC (the old migrator); with
+    # both present the C64 READS the extensionless one and a scratch removes
+    # both. So on a tree the old migrator wrote, the extensionless
+    # "USR LOG" IS the live user database — never delete it. Instead:
+    #   RENAME   the extensionless file to the deploy's ".seq" name when
+    #            nothing already holds that name, so the C64's later
+    #            scratch/rename/open all hit the one file;
+    #   CONFLICT when a ".seq" twin also exists — the extensionless copy is
+    #            what the BBS read, the twin holds writes it never read back;
+    #            neither is deleted, the SysOp resolves it by hand;
+    #   REMOVE   only a ".seq" file that collides with a manifest entry which
+    #            itself has no ".seq" (CONFIG, T64.SIEC, binaries): that is a
+    #            stale shadow of a file the deploy is about to rewrite anyway.
+    # This runs before is_protected() on purpose: the protected rule would
+    # otherwise silently keep a twin pair in place.
+    key = _cbm_key(name)
+    for msection, mname in manifest:
+        if msection != section or _cbm_key(mname) != key:
+            continue
+        live_is_seq = SEQ_RE.match(name) is not None
+        manifest_is_seq = SEQ_RE.match(mname) is not None
+        if not live_is_seq and manifest_is_seq:
+            twin = next((n for n in (live_names or ())
+                         if n.lower() == mname.lower()), None)
+            if twin is not None:
+                return ("CONFLICT",
+                         f"old-migrator file beside C64-written {twin!r}: the BBS "
+                         f"read this one, the twin holds later writes — not touched, "
+                         f"resolve by hand (keep one, rename it to {mname!r})")
+            return ("RENAME", mname)
+        if live_is_seq and not manifest_is_seq:
+            return ("REMOVE",
+                     f"stale .seq shadow of deploy file {mname!r}, which is "
+                     f"rewritten by this deploy")
+        return ("CONFLICT",
+                 f"answers to the same CBM name as deploy file {mname!r} — "
+                 f"not touched, resolve by hand")
 
     if is_protected(name):
         return ("KEEP", "protected: user/message/file-area data or runtime counter")
@@ -216,17 +282,24 @@ def cmd_classify(args):
     listings = parse_listing_args(args.listing)
 
     to_remove = []
+    to_rename = []
+    to_conflict = []
     to_keep = []
     to_review = []
 
     for section in ("ROOT",) + SECTIONS:
-        for name in listings.get(section, []):
-            decision, reason = classify_entry(section, name, manifest)
+        names = listings.get(section, [])
+        for name in names:
+            decision, reason = classify_entry(section, name, manifest, names)
             label = f"{section}/{name}" if section != "ROOT" else name
             if decision == "SKIP":
                 continue
             elif decision == "REMOVE":
                 to_remove.append((section, name, label, reason))
+            elif decision == "RENAME":
+                to_rename.append((section, name, reason, label))
+            elif decision == "CONFLICT":
+                to_conflict.append((label, reason))
             elif decision == "KEEP":
                 to_keep.append((label, reason))
             else:
@@ -241,6 +314,16 @@ def cmd_classify(args):
     else:
         print("REMOVE: nothing matched a remove rule.")
     print()
+    if to_rename:
+        print(f"RENAME ({len(to_rename)}) — old-migrator data files, kept under the name the C64 uses:")
+        for section, name, new, label in to_rename:
+            print(f"  - {label}  ->  {new}")
+        print()
+    if to_conflict:
+        print(f"CONFLICT ({len(to_conflict)}) — NOT touched; resolve by hand before redeploying:")
+        for label, reason in to_conflict:
+            print(f"  - {label}  [{reason}]")
+        print()
     if to_keep:
         print(f"KEEP, recognized ({len(to_keep)}):")
         for label, reason in to_keep:
@@ -258,8 +341,15 @@ def cmd_classify(args):
             for section, name, _, _ in to_remove:
                 sect_path = args.base if section == "ROOT" else f"{args.base}/{section}"
                 f.write(f"{sect_path}/{name}\n")
+    if args.emit_renames:
+        with open(args.emit_renames, "w", encoding="utf-8") as f:
+            for section, name, new, _ in to_rename:
+                sect_path = args.base if section == "ROOT" else f"{args.base}/{section}"
+                f.write(f"{sect_path}/{name}\t{sect_path}/{new}\n")
 
-    return 0
+    # A conflict means the tree holds two candidates for one live data file;
+    # uploading seed data on top would make it three. Refuse.
+    return 1 if to_conflict else 0
 
 
 def cmd_verify(args):
@@ -272,19 +362,20 @@ def cmd_verify(args):
 
     for section in ("ROOT",) + SECTIONS:
         for name in listings.get(section, []):
-            decision, reason = classify_entry(section, name, manifest)
+            decision, reason = classify_entry(section, name, manifest,
+                                              listings.get(section, []))
             if decision == "SKIP":
                 continue
-            seen.add((section, name))
+            seen.add((section, name.lower()))
             label = f"{section}/{name}" if section != "ROOT" else name
-            if decision == "REMOVE":
+            if decision in ("REMOVE", "RENAME", "CONFLICT"):
                 leftovers.append((label, reason))
             elif decision == "KEEP_UNRECOGNIZED":
                 unrecognized.append((label, reason))
 
     missing = []
     for section, name in sorted(manifest):
-        if (section, name) not in seen:
+        if (section, name.lower()) not in seen:
             label = f"{section}/{name}" if section != "ROOT" else name
             missing.append(label)
 
@@ -318,6 +409,27 @@ def cmd_verify(args):
     return 0 if ok else 1
 
 
+def cmd_existing_data(args):
+    """Print the manifest entries that are protected data (user database,
+    boards, message index/bodies, file areas, doors, counters) AND already
+    exist on the device — one relative path per line. deploy.sh --keep-data
+    skips uploading exactly these, so a redeploy refreshes binaries, gfiles
+    and CONFIG without resetting the live install to the seed."""
+    manifest = load_manifest(args.manifest)
+    listings = parse_listing_args(args.listing)
+    remote_keys = {(section, _cbm_key(n))
+                   for section, names in listings.items() for n in names}
+    kept = []
+    for section, mname in sorted(manifest):
+        if not is_protected(mname) or mname.upper() == "T64.SIEC":
+            continue   # the section marker is not data; always refresh it
+        if (section, _cbm_key(mname)) in remote_keys:
+            kept.append(f"{section}/{mname}" if section != "ROOT" else mname)
+    for line in kept:
+        print(line)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -334,8 +446,16 @@ def main():
                          help="repeatable: one `c64u fs ls <dir> --json` capture per "
                               "section (ROOT, SYSTEM, MSGS, FILES, DOORS)")
 
+    p_keep = sub.add_parser("existing-data", parents=[common],
+                             help="pre-upload: which manifest data files already "
+                                  "exist remotely (for --keep-data)")
+    p_keep.set_defaults(func=cmd_existing_data)
+
     p_classify = sub.add_parser("classify", parents=[common],
                                  help="pre-upload: what's safe to remove")
+    p_classify.add_argument("--emit-renames", metavar="path",
+                             help="write one 'old<TAB>new' full remote path pair per "
+                                  "RENAME decision, for the caller to act on")
     p_classify.add_argument("--emit-removals", metavar="path",
                              help="write one full remote path per REMOVE decision, "
                                   "one per line, for the caller to act on")

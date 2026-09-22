@@ -149,12 +149,12 @@ tools/deploy-u64.sh [options]
 
 | Option | Description |
 |--------|-------------|
-| `-l, --location <loc>` | `usb0` (default), `usb1`, `sd`, `bbs` (→ `/BBS`), or a full path |
+| `-l, --location <loc>` | `usb1` (default), `usb0`, `sd`, `bbs` (→ `/BBS`), or a full path |
 | `--boards` | Also upload `data/boards-seed.d81` as `BOARDS-<ver>.D81` |
 | `-h, --help` | Show help |
 
 ```bash
-tools/deploy-u64.sh                  # deploy to /USB0/BBS/
+tools/deploy-u64.sh                  # deploy to /USB1/BBS/
 tools/deploy-u64.sh -l sd           # deploy to /SD/BBS/
 tools/deploy-u64.sh -l bbs          # deploy to /BBS/
 tools/deploy-u64.sh --boards -l bbs # also restore boards disk
@@ -205,12 +205,12 @@ only, not a way to produce a deployable tree.
 
 **Output layout:**
 ```
-<outdir>/CONFIG, ovl_boot.prg, BOOT-SIEC.prg, CONFIGURE-SIEC.prg
-<outdir>/SYSTEM/  other 6 overlays, USR LOG, USR PROF, ACCESS, CALLERS,
-                  T64.SIEC, all gfiles/menus/prompts
-<outdir>/MSGS/    T64.SIEC (+ USR.PTR, BOARDS, B<n>.IDX, B<n>.TXT)
-<outdir>/FILES/   T64.SIEC (+ UDS, UD<n>)
-<outdir>/DOORS/   T64.SIEC (+ DOORS)
+<outdir>/config.seq, ovl_boot.prg, BOOT-SIEC.prg, CONFIGURE-SIEC.prg
+<outdir>/SYSTEM/  other 6 overlays, usr log.seq, usr prof.seq, access.seq,
+                  callers.seq, T64.SIEC, all gfiles/menus/prompts (*.seq)
+<outdir>/MSGS/    T64.SIEC (+ usr.ptr.seq, boards.seq, b<n>.idx.seq, b<n>.txt.seq)
+<outdir>/FILES/   T64.SIEC (+ uds.seq, ud<n>.seq)
+<outdir>/DOORS/   T64.SIEC (+ doors.seq)
 ```
 CONFIG and ovl_boot.prg must be at the root: `main()` loads `OVL_BOOT` and
 `cfg_init()` reads `CONFIG` before any section path is registered, using
@@ -242,17 +242,26 @@ real hardware.
 | `--seed <d81>` | (d81/uiec) seed disk for the user DB (default: `data/users-seed.d81`) |
 | `--drive <a\|b>` | (d81/uiec) internal drive slot |
 | `--device <n>` / `--base <path>` | (siec) SoftIEC bus id / Default Path (env `T64_SIEC_DEVICE` / `T64_SIEC_BASE`) |
-| `--clean` | (siec only) remove stale files under `--base` before uploading — old BOOT/ovl binaries, `src-diag/` diagnostics, probe scratch, and any `*.seq` leftover that collides with a file this deploy writes (see below) |
+| `--clean` | (siec only) tidy `--base` before uploading: remove old BOOT/ovl binaries, `src-diag/` diagnostics and probe scratch; **rename** data files an older migrator wrote without `.seq` to the spelling the C64 uses (they are the live data); **stop** if a file and its `.seq` twin are both present (see below) |
 | `--yes` | Skip `--clean`'s interactive delete confirmation |
+| `--reset-data` | (siec only) upload the seed's data files (user database, boards, message index/bodies, file areas, doors, counters) **over** ones already on the device. By default they are left alone and only binaries, overlays, gfiles and the config are refreshed, so a redeploy updates a live install without resetting it |
 
 Run `tools/deploy.sh --help` for the full per-target breakdown, including
 why `c64u runners run-prg` cannot launch the `siec` target at all (it
 forces device 8 and truncates the path).
 
 **`--clean` (siec only):** SoftIEC derives the CBM filename by stripping a
-host-side type-marker extension, so a scratch file named `USR LOG.seq`
-sitting beside the real `USR LOG` presents the SAME CBM name — which one
-opens is undefined. `--clean` classifies (via `tools/siec_clean.py`)
+host-side type-marker extension and ignores case, so `CALLERS` beside
+`callers.seq` presents the SAME CBM name. Measured on hardware (C64 Ultimate,
+firmware 1.1.0): the C64 always *writes* lowercase `<name>.seq`; an
+extensionless file only ever comes from the PC; with both present the C64
+*reads* the extensionless one and a scratch removes both. So on a tree the
+older migrator wrote, the extensionless `USR LOG` is the live user database.
+`--clean` therefore never deletes a data file: it renames the old spelling to
+the `.seq` one, and if both spellings of one file are present it reports a
+CONFLICT and stops before uploading anything. `migrate-d81.py` itself now
+writes every data file (and `config.seq`) in the `.seq` spelling.
+`--clean` classifies (via `tools/siec_clean.py`)
 everything currently under `--base` as safe-to-remove or must-keep, and
 defaults to keeping: anything not positively matched by a remove rule is
 reported unrecognized and left alone. User/message/file-area data (`USR

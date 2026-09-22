@@ -279,7 +279,7 @@ bbs_err_t door_delete(u8 id, u8 device) {
   /* Write all-zero record; id byte 0 = 0 marks the slot as empty. */
   memset(buf, 0, RECORD_SIZE_DOOR);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_DOOR);
-  rel_close(h);
+  err = rel_close_keep(h, err);
 
   return err;
 }
@@ -315,7 +315,7 @@ bbs_err_t door_save(const door_record_t *rec, u8 device) {
 
   door_pack(rec, buf);
   err = rel_write(h, (const void *)buf, RECORD_SIZE_DOOR);
-  rel_close(h);
+  err = rel_close_keep(h, err);
 
   return err;
 }

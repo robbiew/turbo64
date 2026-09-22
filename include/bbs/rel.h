@@ -49,6 +49,7 @@ bbs_err_t rel_write(rel_handle_t h, const void *buf, u8 record_size);
 
 /* Close the REL file handle. */
 bbs_err_t rel_close(rel_handle_t h);
+bbs_err_t rel_close_keep(rel_handle_t h, bbs_err_t err);
 
 /* Force-clear the single-open guard when the underlying KERNAL channels
  * were closed by external code (e.g. after a disk_scratch + raw krnio_close). */

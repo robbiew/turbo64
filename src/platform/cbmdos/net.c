@@ -74,15 +74,42 @@
 static volatile u8 s_rx_head;
 static volatile u8 s_rx_tail;
 
-/* Timer-B reload (~0.24ms at ~1.02MHz) — comfortably below one byte time at the
- * highest delivered rate (the ACIA register tops out at 19200 here, ~0.52ms per
- * byte), so the connect burst is never missed. */
-#define TIMERB_LATCH 250
+/* Timer-B reload, in phi2 cycles (~1.02 MHz).  The 6551 holds ONE received
+ * byte, so two consecutive drains must never be further apart than a byte
+ * time, including IRQ latency: the instruction in flight (<= 7 cycles), a VIC
+ * bad line (~43), and the ~80 cycles the KERNAL IRQ entry + this handler +
+ * the epilogue cost.
+ *
+ *   250 is fine up to 19200 (~530 cycles per byte) and was written for that.
+ *   At 38400 a byte is ~265 cycles, and 250 + latency exceeds it whenever a
+ *   bad line delays the tick — measured on a C64 Ultimate 2026-09-22: with
+ *   the keyscan window already fixed (see acia_irq_isr), 4 of 10 unpaced
+ *   15-character bursts still lost a byte at 38400; at 125 it was 10 of 10
+ *   intact.  160 leaves ~50 cycles of margin at 38400 for about half the
+ *   interrupt load of 125 (~80 cycles of overhead per tick either way, so
+ *   ~50% of the CPU at 160 vs ~32% at 250 — the price of 38400 on a 1 MHz
+ *   machine).  The latch is picked per configured rate in net_init(), so
+ *   9600/19200 setups keep the cheaper tick. */
+#define TIMERB_LATCH_SLOW 250   /* <= 19200 */
+#define TIMERB_LATCH_FAST 160   /* 38400 */
+static u8 s_tb_latch = TIMERB_LATCH_SLOW;
 
 /* CIA#1 Timer-B IRQ, chained off $0314.  Reads the CIA ICR once (which clears
  * it), drains the ACIA into the ring on a Timer-B tick, and on a Timer-A tick
  * runs the KERNAL jiffy (UDTIM) + keyboard scan (SCNKEY) so the local console
- * keeps working, then exits via the KERNAL IRQ epilogue ($EA81). */
+ * keeps working, then exits via the KERNAL IRQ epilogue ($EA81).
+ *
+ * The Timer-A work takes ~1 ms, longer than a byte at any rate above 9600,
+ * and used to run with IRQs masked: a caller's burst that straddled a keyscan
+ * lost one byte every time.  Measured on a C64 Ultimate 2026-09-22 with a
+ * 15-character paste at the HANDLE prompt — 3 of 4 bursts dropped a character
+ * at 38400, 2 of 4 at 9600; 80 ms per-character pacing never lost one.  So
+ * IRQs are re-enabled around UDTIM/SCNKEY: a Timer-B tick then nests through
+ * this same handler, sees only its own bit (Timer-A's was consumed at entry),
+ * drains the ACIA and returns into the keyscan.  The nested path touches only
+ * the ring and the ACIA, so nothing SCNKEY uses is disturbed, and it cannot
+ * itself CLI, so nesting depth is one.  A final drain before the epilogue
+ * picks up anything that arrived after the last nested tick. */
 __asm acia_irq_isr
 {
     lda $dc0d           // read+clear CIA1 ICR: bit0=TimerA, bit1=TimerB
@@ -104,8 +131,13 @@ chkta:
     pla
     and #$01
     beq done
+    cli                 // let Timer-B nest through us during the ~1 ms below
     jsr $ffea           // UDTIM: jiffy clock + STOP key
     jsr $ff9f           // SCNKEY: keyboard scan -> buffer (for GETIN)
+    sei
+    lda #$02
+    pha                 // fake "Timer-B only" ICR and take one more drain pass
+    jmp tbloop
 done:
     jmp $ea81           // KERNAL IRQ epilogue: pull Y,X,A then RTI
 }
@@ -121,9 +153,9 @@ static void net_irq_setup(void)
 {
     __asm {
         sei
-        lda #<TIMERB_LATCH
+        lda s_tb_latch
         sta $dc06
-        lda #>TIMERB_LATCH
+        lda #0              // latch high byte: both values fit in one byte
         sta $dc07
         lda #$11            // CRB: start, continuous, force-load, count phi2
         sta $dc0f
@@ -231,6 +263,7 @@ bbs_err_t net_init(void)
     case 38400:  ctl = CTL_BAUD_38400;  break;
     default:     ctl = CTL_BAUD_9600;   break;  /* Fallback to 9600 if invalid */
     }
+    s_tb_latch = (bbs_cfg.baud_rate == 38400) ? TIMERB_LATCH_FAST : TIMERB_LATCH_SLOW;
     ACIA_CTL = ctl;
     ACIA_CMD = CMD_DTR_ON;
 

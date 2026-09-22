@@ -279,6 +279,10 @@ void rel_seq_require_storage(void)
         if (!ok) {
             printf("\rUNMIGRATED INSTALL\r");
             printf("RUN: TOOLS/MIGRATE-D81.PY\r");
+            /* The marker open above CD'd SoftIEC into the section, and that
+             * cursor survives a reset: put it back at the tree root so the
+             * operator's next LOAD"BOOT-SIEC" after fixing the tree works. */
+            disk_reset_cursor_root(bbs_cfg.device_system);
             for (;;) { }
         }
     }
@@ -421,6 +425,15 @@ bbs_err_t rel_write(rel_handle_t h, const void *buf, u8 record_size)
     s_pos++;
     s_off = (u16)(s_off + s_recsize);
     return BBS_OK;
+}
+
+/* Close after a write and keep the FIRST error: on the SEQ backend the disk
+ * write happens in rel_close(), so a save path that returned rel_write()'s
+ * result alone reported success even when the flush failed (PR #25 review). */
+bbs_err_t rel_close_keep(rel_handle_t h, bbs_err_t err)
+{
+    bbs_err_t ce = rel_close(h);
+    return (err != BBS_OK) ? err : ce;
 }
 
 bbs_err_t rel_close(rel_handle_t h)

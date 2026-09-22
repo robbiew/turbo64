@@ -5,15 +5,25 @@ Non-destructive: reads the image, writes a new directory. The source .d81 is
 never modified, so a failed run loses nothing.
 
 Produces the layout verified on hardware:
-    <outdir>/         CONFIG, ovl_boot.prg, BOOT-SIEC.prg, CONFIGURE-SIEC.prg
-    <outdir>/SYSTEM/  the other six overlays, USR LOG, USR PROF, ACCESS,
-                      CALLERS, T64.SIEC, all gfiles/menus/prompts
-    <outdir>/MSGS/    T64.SIEC (+ USR.PTR, BOARDS, B<n>.IDX, B<n>.TXT)
-    <outdir>/FILES/   T64.SIEC (+ UDS, UD<n>)
-    <outdir>/DOORS/   T64.SIEC (+ DOORS)
+    <outdir>/         config.seq, ovl_boot.prg, BOOT-SIEC.prg, CONFIGURE-SIEC.prg
+    <outdir>/SYSTEM/  the other six overlays, usr log.seq, usr prof.seq,
+                      access.seq, callers.seq, T64.SIEC, all gfiles/menus/prompts
+    <outdir>/MSGS/    T64.SIEC (+ usr.ptr.seq, boards.seq, b<n>.idx.seq, b<n>.txt.seq)
+    <outdir>/FILES/   T64.SIEC (+ uds.seq, ud<n>.seq)
+    <outdir>/DOORS/   T64.SIEC (+ doors.seq)
 CONFIG and ovl_boot.prg MUST be at the root: main() loads OVL_BOOT and
 cfg_init() reads CONFIG before any section path is registered, using
 whatever directory the KERNAL cursor is already sitting in.
+
+Every migrated data file is written as "<name>.seq", lowercase — the host
+name SoftIEC itself produces when the C64 writes "<NAME>,S,W". This is not
+cosmetic. MEASURED on a C64 Ultimate (firmware 1.1.0, 2026-09-21): an
+extensionless "CALLERS" written from the PC opens fine for reading, but a
+scratch of "CALLERS" from the C64 does NOT remove it, and a subsequent
+write creates "callers.seq" beside it. Reads then keep opening the stale
+extensionless copy, so every save CONFIGURE or the BBS made to ACCESS,
+CALLERS (and by the same path the record sets) was silently discarded. With
+the ".seq" name there is one file, and scratch/rename/open all hit it.
 """
 import argparse
 import os
@@ -61,9 +71,9 @@ SEQ_FIXED = {
     "callers": ("CALLERS", "SYSTEM"),
 }
 
-# SEQ entries that are expected on a seeded image but deliberately not
-# migrated (a different, non-SIEC format) — not to be confused with a
-# genuinely unrecognized entry the SysOp should look at.
+# SEQ entries on a seeded image that are not copied through classify_entry():
+# "config" is handled separately by merge_config() (its settings are kept,
+# its DEV_* lines replaced) rather than copied verbatim.
 EXPECTED_SEQ_SKIP = {"config"}
 
 # The SIEC binaries this tree cannot boot (or be configured) without. Root:
@@ -94,6 +104,15 @@ SYSTEM_SIEC_ARTIFACTS = [
 # and the example door ships configured for section 3 (doors).
 DOOR_PRG_SRC = "FORTUNE.prg"   # build/c64/FORTUNE.prg, from `make door-example`
 DOOR_PRG_DST = "fortune.prg"   # DOORS/fortune.prg; SoftIEC strips ".prg" -> CBM name FORTUNE
+
+
+def host_name(canon):
+    """Host filename for a migrated data file: the form SoftIEC writes
+    itself, so the C64's later scratch/rename/open all address the same
+    file (see module docstring). SoftIEC matches CBM names case-insensitively
+    and strips the ".seq" type marker, so "callers.seq" answers to CALLERS.
+    """
+    return canon.lower() + ".seq"
 
 
 def trim_records(data, record_size):
@@ -160,6 +179,11 @@ def classify_entry(name, kind):
 def list_image(c1541, image):
     """Return [(name, type), ...] for every directory entry in the image."""
     r = subprocess.run([c1541, image, "-list"], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"c1541 -list failed on {image} (exit {r.returncode}):\n"
+                 f"{(r.stderr or r.stdout).strip()}\n"
+                 f"Refusing to continue — an unreadable image would migrate as an "
+                 f"empty one and produce a tree with no user database.")
     entries = []
     for line in r.stdout.splitlines():
         m = re.match(r'^\s*\d+\s+"([^"]*)"\s+(\S+)', line)
@@ -245,14 +269,49 @@ def copy_door_artifact(door_build_dir, outdir):
     return [DOOR_PRG_DST]
 
 
-def write_config(outdir, specs):
-    """Write CONFIG at the tree ROOT (never SYSTEM/ — see module docstring)."""
-    with open(os.path.join(outdir, "CONFIG"), "w") as f:
-        f.write(f"DEV_SYSTEM={specs['SYSTEM']}\r")
-        f.write(f"DEV_MSGS={specs['MSGS']}\r")
-        f.write(f"DEV_FILES={specs['FILES']}\r")
-        f.write(f"DEV_DOORS={specs['DOORS']}\r")
-        f.write(f"DEV_GFILES={specs['SYSTEM']}\r")
+DEVICE_KEYS = ("DEV_SYSTEM", "DEV_MSGS", "DEV_FILES", "DEV_DOORS", "DEV_GFILES")
+
+
+def merge_config(source_bytes, specs):
+    """Build the SIEC CONFIG text: every setting from the source disk's
+    config (BBS_NAME, SYSOP_NAME, BAUD_RATE, MODEM_TYPE, ...) carried through
+    unchanged, with the five DEV_* lines replaced by the SoftIEC section
+    specs. cfg_apply() parses one key=value format in both builds, so only
+    the device lines differ between a .d81 install and a SoftIEC one.
+
+    Before this the tree got the DEV_* lines alone, and a SoftIEC install ran
+    on compile-time defaults for everything else — measured on hardware as
+    "YOUR SYSOP IS SYSTEM" on the connect screen and 9600 in the callers log
+    against a seed config saying SYSOP_NAME=SYSOP / BAUD_RATE=38400.
+
+    Source line endings may be LF (data/config as written on the PC) or CR
+    (cfg_save() on the C64); output is CR, what the C64 side writes.
+    """
+    kept = []
+    for raw in source_bytes.decode("latin-1").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw.rstrip()
+        if not line:
+            continue
+        key = line.split("=", 1)[0].strip().upper()
+        if key in DEVICE_KEYS:
+            continue
+        kept.append(line)
+    kept.append(f"DEV_SYSTEM={specs['SYSTEM']}")
+    kept.append(f"DEV_MSGS={specs['MSGS']}")
+    kept.append(f"DEV_FILES={specs['FILES']}")
+    kept.append(f"DEV_DOORS={specs['DOORS']}")
+    kept.append(f"DEV_GFILES={specs['SYSTEM']}")
+    return "".join(l + "\r" for l in kept)
+
+
+def write_config(outdir, specs, source_bytes=b""):
+    """Write the config at the tree ROOT (never SYSTEM/ — see module docstring)."""
+    # "config.seq", not "CONFIG": the C64 writes lowercase <name>.seq, and an
+    # extensionless copy beside it would shadow every save (same measured
+    # trap as the data files — see host_name()). SoftIEC resolves "CONFIG"
+    # to config.seq on read.
+    with open(os.path.join(outdir, host_name("CONFIG")), "w", newline="") as f:
+        f.write(merge_config(source_bytes, specs))
 
 
 def main():
@@ -351,7 +410,7 @@ def main():
         with open(tmp, "rb") as f:
             data = f.read()
         out = trim_records(data, size) if size else data
-        with open(os.path.join(args.outdir, section, canon), "wb") as f:
+        with open(os.path.join(args.outdir, section, host_name(canon)), "wb") as f:
             f.write(out)
         if size:
             converted.append(f"{canon}: {len(data)} -> {len(out)} bytes "
@@ -373,7 +432,16 @@ def main():
     # no CD: has happened yet and the read lands in the SoftIEC default path.
     # Putting it in SYSTEM/ means the BBS never finds it and silently falls
     # back to compile-time defaults — it boots fine and reads the wrong device.
-    write_config(args.outdir, specs)
+    source_cfg = b""
+    if extract(args.c1541, args.image, "config", tmp, "s"):
+        with open(tmp, "rb") as f:
+            source_cfg = f.read()
+        os.remove(tmp)
+        converted.append(f"CONFIG: settings carried from the image's config, "
+                         f"DEV_* replaced with SoftIEC paths")
+    else:
+        unrecognized.append("config (seq) — absent from image; CONFIG has DEV_* lines only")
+    write_config(args.outdir, specs, source_cfg)
 
     copied = copy_siec_artifacts(args.siec_build_dir, args.outdir)
     door_copied = copy_door_artifact(args.door_build_dir, args.outdir)
