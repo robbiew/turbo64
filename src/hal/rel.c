@@ -9,6 +9,14 @@
  * Only one REL file may be open at a time (single data channel).
  */
 #include "bbs/rel.h"
+#ifdef T64_BOOT_OVERLAY
+#include "bbs/net.h"
+#define IO_HOLD    net_rx_hold()
+#define IO_RELEASE net_rx_release()
+#else
+#define IO_HOLD
+#define IO_RELEASE
+#endif
 #include "bbs/config.h"
 #include "bbs/hal/disk.h"
 #include <c64/kernalio.h>
@@ -19,7 +27,7 @@ static u8 s_rec_size = 0;
 static u8 s_device   = 0;
 static u8 s_open     = 0;
 
-bbs_err_t rel_open(u8 device, u8 partition, const char *name, u8 record_size,
+static bbs_err_t rel_open_impl(u8 device, u8 partition, const char *name, u8 record_size,
                    rel_handle_t *out)
 {
     if (s_open) return BBS_EFULL;   /* only one open at a time */
@@ -82,7 +90,17 @@ bbs_err_t rel_open(u8 device, u8 partition, const char *name, u8 record_size,
     return BBS_OK;
 }
 
-bbs_err_t rel_position(rel_handle_t h, u16 rec)
+bbs_err_t rel_open(u8 device, u8 partition, const char *name, u8 record_size,
+                   rel_handle_t *out)
+{
+    bbs_err_t e;
+    IO_HOLD;
+    e = rel_open_impl(device, partition, name, record_size, out);
+    IO_RELEASE;
+    return e;
+}
+
+static bbs_err_t rel_position_impl(rel_handle_t h, u16 rec)
 {
     if (!s_open) return BBS_ENOTFOUND;
     /* Send "P" command via PRINT#15 (CHKOUT style) — equivalent to BASIC:
@@ -99,7 +117,16 @@ bbs_err_t rel_position(rel_handle_t h, u16 rec)
     return BBS_OK;
 }
 
-bbs_err_t rel_read(rel_handle_t h, void *buf, u8 record_size, u8 *got)
+bbs_err_t rel_position(rel_handle_t h, u16 rec)
+{
+    bbs_err_t e;
+    IO_HOLD;
+    e = rel_position_impl(h, rec);
+    IO_RELEASE;
+    return e;
+}
+
+static bbs_err_t rel_read_impl(rel_handle_t h, void *buf, u8 record_size, u8 *got)
 {
     if (!s_open) return BBS_ENOTFOUND;
     /* krnio_read handles CHKIN internally (same pattern as krnio_write/CHKOUT).
@@ -121,7 +148,16 @@ bbs_err_t rel_read(rel_handle_t h, void *buf, u8 record_size, u8 *got)
     return BBS_OK;
 }
 
-bbs_err_t rel_write(rel_handle_t h, const void *buf, u8 record_size)
+bbs_err_t rel_read(rel_handle_t h, void *buf, u8 record_size, u8 *got)
+{
+    bbs_err_t e;
+    IO_HOLD;
+    e = rel_read_impl(h, buf, record_size, got);
+    IO_RELEASE;
+    return e;
+}
+
+static bbs_err_t rel_write_impl(rel_handle_t h, const void *buf, u8 record_size)
 {
     if (!s_open) return BBS_ENOTFOUND;
     /* krnio_write handles CHKOUT + CHROUT loop + CLRCHN internally.
@@ -135,6 +171,15 @@ bbs_err_t rel_write(rel_handle_t h, const void *buf, u8 record_size)
     return (r == (int)record_size) ? BBS_OK : BBS_EIO;
 }
 
+bbs_err_t rel_write(rel_handle_t h, const void *buf, u8 record_size)
+{
+    bbs_err_t e;
+    IO_HOLD;
+    e = rel_write_impl(h, buf, record_size);
+    IO_RELEASE;
+    return e;
+}
+
 /* Close after a write and keep the FIRST error: on the SEQ backend the disk
  * write happens in rel_close(), so a save path that returned rel_write()'s
  * result alone reported success even when the flush failed (PR #25 review). */
@@ -144,7 +189,7 @@ bbs_err_t rel_close_keep(rel_handle_t h, bbs_err_t err)
     return (err != BBS_OK) ? err : ce;
 }
 
-bbs_err_t rel_close(rel_handle_t h)
+static bbs_err_t rel_close_impl(rel_handle_t h)
 {
     if (!s_open) return BBS_OK;
     krnio_clrchn();
@@ -152,6 +197,15 @@ bbs_err_t rel_close(rel_handle_t h)
     krnio_close(CFG_FNUM_CMD);
     s_open = 0;
     return BBS_OK;
+}
+
+bbs_err_t rel_close(rel_handle_t h)
+{
+    bbs_err_t e;
+    IO_HOLD;
+    e = rel_close_impl(h);
+    IO_RELEASE;
+    return e;
 }
 
 void rel_reset(void)

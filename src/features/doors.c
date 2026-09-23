@@ -126,10 +126,13 @@ __noinline void door_run(session_t *s, const door_record_t *rec) {
 
   sprintf(name, "0:%s", rec->filename);
   krnio_setnam(name);
+  net_rx_hold();                       /* RTS off while the KERNAL loads (issue #27) */
   if (!krnio_load(1, rec->device, 1)) {
+    net_rx_release();
     session_emit(s, "\r\nDOOR LOAD FAILED.\r\n");
     goto reload_ovl;
   }
+  net_rx_release();
   if (!door_abi_check(hdr[BBS_DOOR_HDR_MAGIC], hdr[BBS_DOOR_HDR_MAGIC+1],
                       hdr[BBS_DOOR_HDR_VER])) {
     session_emit(s, "\r\nDOOR ABI MISMATCH.\r\n");
