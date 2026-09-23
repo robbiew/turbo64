@@ -27,6 +27,28 @@
  * BSS
  * ----------------------------------------------------------------------- */
 static u8  z_rxbuf[255]; /* disk-read / data-packet accumulation buffer */
+
+/* What our ZRINIT advertises. The low 16 bits are the receive buffer size:
+ * a sender that sees it (lrzsz, SyncTerm) limits each data subpacket to it
+ * and waits for our ZACK after every block. Without it a PC sender streams
+ * 1 KB subpackets at line rate into a 128-byte RX ring drained one byte at
+ * a time; the ring overran, the CRC failed, and after the retries the
+ * transfer died (measured: 2 KB upload from sz, file created, 0 bytes).
+ * 255 = sizeof(z_rxbuf), the most one subpacket can hold here anyway. */
+/* Flags in ZF0 (the last header byte); receive-buffer length in the first
+ * two. CANOVIO is deliberately NOT set: with it the sender streams 1 KB
+ * ZCRCG subpackets, but z_recv_data_pkt accumulates into a 255-byte buffer
+ * and the RX ring is 128 bytes, so anything over the buffer was dropped
+ * (and skipped from the CRC), the subpacket CRC failed, and the sender
+ * resent the same oversized block forever. Advertising a 64-byte buffer and
+ * no overlap asks a sender to send <=64-byte subpackets and wait for our
+ * ZACK — flow the 128-byte ring and the byte-at-a-time drain keep up with.
+ * A sender that honours rxbuflen (per the ZMODEM spec) does this; lrzsz sz
+ * 0.12.20 does NOT (it uses rxbuflen only for window/ACK cadence and still
+ * streams 1 KB subpackets), so an lrzsz upload is not fixed by this alone —
+ * the receiver must accept a large streamed subpacket, which is issue #36. */
+#define Z_RXBUF 64u
+#define ZRINIT_INFO (((u32)CANFDX << 24) | Z_RXBUF)
 static u8  z_tx[160];    /* tx staging; flushed via net_tx_raw */
 static u8  z_txlen;
 static u8  z_cancel_cnt; /* consecutive ZDLE bytes seen (5 = abort) */
@@ -289,7 +311,12 @@ __noinline zmodem_result_t zmodem_send(const session_t *s, u8 device, u8 drive,
         return ZMODEM_ERR;
     }
 
-    session_emit(s, "\r\nZMODEM SEND - CTRL-X TO CANCEL\r\n");
+    /* No capital C in either banner: lrzsz (sz/rz, and the clients built on
+     * it) treat a 'C' arriving before the first Zmodem frame as the
+     * XMODEM/YMODEM "send in CRC mode" request and switch protocol on the
+     * spot. Measured: with "ZMODEM RECV - CTRL-X TO CANCEL" printed first,
+     * sz answered with YMODEM blocks and the transfer never started. */
+    session_emit(s, "\r\nZMODEM SEND - START YOUR DOWNLOAD (X TO STOP)\r\n");
 
     /* Prompt receiver with ZRQINIT, wait for ZRINIT */
     frame = 0;
@@ -391,10 +418,10 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
 
     z_cancel_cnt = 0; z_txlen = 0;
 
-    session_emit(s, "\r\nZMODEM RECV - CTRL-X TO CANCEL\r\n");
+    session_emit(s, "\r\nZMODEM - START YOUR UPLOAD NOW (X TO STOP)\r\n");
 
     /* Advertise our capabilities */
-    z_send_hex_hdr(ZRINIT, (u32)(CANFDX | CANOVIO));
+    z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
 
     /* Wait for ZFILE */
     frame = 0;
@@ -404,7 +431,7 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
         if (frame == ZFIN) { z_send_hex_hdr(ZRINIT, 0); return ZMODEM_OK; }
         if (frame == ZABORT || frame == -2) { z_send_cancel(); return ZMODEM_CANCEL; }
         if (frame == ZRQINIT) {
-            z_send_hex_hdr(ZRINIT, (u32)(CANFDX | CANOVIO));
+            z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
             retries = 0;
         }
     }
@@ -482,7 +509,7 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
     file_open = FALSE;
 
     /* Ready for next file (or ZFIN) */
-    z_send_hex_hdr(ZRINIT, (u32)(CANFDX | CANOVIO));
+    z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
 
     /* Wait for ZFIN */
     for (retries = 0; retries < 10; retries++) {
