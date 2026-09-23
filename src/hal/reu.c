@@ -97,6 +97,13 @@ static void dma_fetch(void *c64_ptr, u8 bank, u16 reu_off, u16 len)
     while ((r[R_STATUS] & STATUS_EOB) == 0) ;
 }
 
+/* Boot-only (boot_sequence() and rel_seq_require_storage(), both of which
+ * run from the boot overlay), so it lives there too and costs nothing
+ * resident. The editor build has no overlays and keeps it in main. */
+#ifdef T64_BOOT_OVERLAY
+#pragma code(boot_code)
+#pragma data(boot_data)
+#endif
 /* Detection stash/fetch: take explicit c64/reu address as u16/u32 (no pointer).
  * Used only by reu_detect_internal() so the volatile register pointer stays local. */
 static void det_stash(volatile u8 *r, u16 c64a, u32 reu_a)
@@ -190,13 +197,6 @@ static u16 reu_detect_internal(void)
 /* Returns the detected size in KB (0 if absent). Also records it in
  * bbs_cfg.reu_detected_size / reu_enabled. main.c prints the return value, so
  * it must be the real size, not a bool. */
-/* Boot-only (boot_sequence() and rel_seq_require_storage(), both of which
- * run from the boot overlay), so it lives there too and costs nothing
- * resident. The editor build has no overlays and keeps it in main. */
-#ifdef T64_BOOT_OVERLAY
-#pragma code(boot_code)
-#pragma data(boot_data)
-#endif
 u16 reu_detect(void)
 {
     u16 sz = reu_detect_internal();

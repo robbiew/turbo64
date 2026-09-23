@@ -63,6 +63,7 @@ static u8          s_spy_last_sec = 255;
  * NET_DROPPING state settles. Reset per session in session_init(). */
 static clock_tod_t s_idle_mark;
 static bool_t      s_idle_fired = FALSE;
+static u16         s_keepalive_at;   /* idle second the last keepalive went out at */
 
 /* MINS/DAY enforcement state (per session). Armed by session_time_begin();
  * checked once/second from sess_getc() via session_time_check(). */
@@ -292,6 +293,7 @@ void session_spy_init(session_t *s)
     /* Arm the keyboard idle watchdog from the moment of connect. */
     s_idle_mark = s_spy_start;
     s_idle_fired = FALSE;
+    s_keepalive_at = 0;
 
     if ((s->term_mode == TERM_ANSI_CP437 || s->term_mode == TERM_ASCII)
             && bbs_cfg.reu_enabled) {
@@ -511,13 +513,25 @@ void session_spy_poll(void)
 static void sess_idle_check(void)
 {
     clock_tod_t now;
-    u16 limit;
+    u16 limit, idle;
 
-    if (s_idle_fired || bbs_cfg.idle_timeout_mins == 0) return;
+    if (s_idle_fired) return;
 
-    limit = (u16)bbs_cfg.idle_timeout_mins * 60u;
     clock_read(&now);
-    if (clock_elapsed(&s_idle_mark, &now) < limit) return;
+    idle = clock_elapsed(&s_idle_mark, &now);
+
+    /* Every 5 idle seconds, one NUL to the caller — see net_keepalive():
+     * a caller whose socket is gone but whose DSR the Ultimate never dropped
+     * (issue #31) is then noticed within seconds rather than at the idle
+     * timeout, which is otherwise the only thing that recovers the line. */
+    if (idle >= 5u && (idle % 5u) == 0u && idle != s_keepalive_at) {
+        s_keepalive_at = idle;
+        net_keepalive();
+    }
+
+    if (bbs_cfg.idle_timeout_mins == 0) return;
+    limit = (u16)bbs_cfg.idle_timeout_mins * 60u;
+    if (idle < limit) return;
 
     s_idle_fired = TRUE;
     sess_color(s_active, 0x9f, "\x1b[36m");
@@ -559,6 +573,7 @@ static u8 sess_rx_byte(u8 *out)
             if (sess_accept_input(*out, out)) {
                 *out = sess_unxlate(*out);
                 clock_read(&s_idle_mark);   /* activity — restart watchdog */
+                s_keepalive_at = 0;
                 return 1;
             }
         }

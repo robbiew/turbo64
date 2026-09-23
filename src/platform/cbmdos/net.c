@@ -270,19 +270,62 @@ static modem_type_t resolve_modem_type(void)
 #pragma data(data)
 #endif
 
-static void acia_putc(u8 b)
+/* Consecutive bytes the transmitter refused to take (TDRE never set within
+ * the spin timeout, ~0.6 s each). On the Ultimate this is what a caller who
+ * closed their TCP session without the firmware noticing looks like: DSR
+ * stays asserted, the socket is dead, and TX stops draining (issue #31).
+ * TX_STALL_LIMIT such bytes while connected is treated as carrier loss so
+ * the session ends and net_disconnect()'s DTR drop clears the firmware —
+ * seconds instead of the idle timeout's minutes. A live but slow client
+ * would have to stop reading for the whole span to trip it. */
+static void delay_jiffies(u8 n);   /* defined below; used by net_init() */
+
+#define TX_STALL_LIMIT 3
+static u8     s_tx_stalls;
+static bool_t s_tx_dead;     /* stall threshold hit: net_rx() must drop DTR */
+
+/* Returns FALSE when the byte was not sent: the transmitter stalled, or the
+ * line is already being dropped — in which case it returns at once, so a
+ * sender with hundreds of bytes queued behind a dead socket fails in one
+ * timeout, not one per byte (PR #33 review). */
+__noinline static bool_t acia_putc(u8 b)
 {
     u16 timeout = 0;
+    if (s_state == NET_DROPPING) return FALSE;
     while ((ACIA_STATUS & ST_TX_EMPTY) == 0) {
         // cppcheck-suppress knownConditionTrueFalse
-        if (++timeout == 0) return;
+        if (++timeout == 0) {
+            if (s_state == NET_CONNECTED && ++s_tx_stalls >= TX_STALL_LIMIT) {
+                /* Flag it for net_rx() to tear down (DTR drop) on its next
+                 * call rather than calling net_disconnect() from here: that
+                 * would make acia_putc -> net_disconnect -> acia_puts ->
+                 * acia_putc a cycle, which oscar64's static frames cannot
+                 * take. net_rx() is the pump every wait path calls, the WFC
+                 * included, so the teardown never depends on a session
+                 * cleanup that the WFC pump does not have. */
+                s_state   = NET_DROPPING;
+                s_tx_dead = TRUE;
+            }
+            return FALSE;
+        }
     }
+    s_tx_stalls = 0;
     ACIA_DATA = b;
+    return TRUE;
+}
+
+/* One invisible byte to the caller (NUL: ignored by telnet clients and by
+ * PETSCII/ANSI terminals alike) so that a dead socket shows up as a TX
+ * stall even while the BBS is only waiting for input. sess_idle_check()
+ * sends it every few idle seconds. */
+void net_keepalive(void)
+{
+    if (s_state == NET_CONNECTED) (void)acia_putc(0);
 }
 
 static void acia_puts(const char *s)
 {
-    while (*s) acia_putc((u8)*s++);
+    while (*s && acia_putc((u8)*s)) s++;
 }
 
 /* Boot-only: runs once from boot_sequence(), which itself runs from the
@@ -328,6 +371,18 @@ bbs_err_t net_init(void)
     }
     s_tb_latch = (bbs_cfg.baud_rate == 38400) ? TIMERB_LATCH_FAST : TIMERB_LATCH_SLOW;
     ACIA_CTL = ctl;
+    /* If the line already shows a caller before we have even raised DTR,
+     * it is a session the modem kept across our reset — on the Ultimate,
+     * one whose TCP peer is long gone (issue #31), with a byte stuck in the
+     * transmitter and no way to answer a real caller. Drop DTR for a second
+     * first: standard modem practice, and it tells the firmware to tear
+     * the stale session down. Measured on the C64U: a BOOT with the modem
+     * in that state used to sit at WFC unable to answer until the Ultimate
+     * was rebooted. */
+    if ((ACIA_STATUS & 0x40) == 0) {
+        acia_set_cmd(CMD_DTR_OFF);
+        delay_jiffies(60);
+    }
     acia_set_cmd(CMD_DTR_ON);
 
     acia_puts("ATZ\r");
@@ -385,6 +440,11 @@ static u8 process_inbound(u8 in, u8 *out)
 
 bbs_err_t net_rx(void *buf, u16 want, u16 *got)
 {
+    /* Transmitter gave up on a dead peer (see acia_putc): hang up properly. */
+    if (s_tx_dead) {
+        s_tx_dead = FALSE;
+        net_disconnect();
+    }
     /* DSR-based disconnect (U64 only): only fire if DSR was seen active
      * during this session.  Under VICE/tcpser DSR is never driven, so
      * s_dsr_was_active stays FALSE and this check is skipped — disconnect
@@ -411,7 +471,6 @@ bbs_err_t net_rx(void *buf, u16 want, u16 *got)
         bool_t dsr_active = ((ACIA_STATUS & 0x40) == 0) ? TRUE : FALSE;
         if (!dsr_active || !s_dsr_was_active) {
             s_state = NET_IDLE;
-            acia_set_cmd(CMD_DTR_ON);
             s_saw_dsr_inactive = TRUE;
         }
     }
@@ -472,9 +531,12 @@ bbs_err_t net_tx(const void *buf, u16 n, u16 *sent)
 {
     if (s_state != NET_CONNECTED) { *sent = 0; return BBS_EAGAIN; }
     const u8 *p = (const u8 *)buf;
-    for (u16 i = 0; i < n; i++) acia_putc(p[i]);
-    *sent = n;
-    return BBS_OK;
+    u16 i;
+    for (i = 0; i < n; i++) {
+        if (!acia_putc(p[i])) break;
+    }
+    *sent = i;
+    return (i == n) ? BBS_OK : BBS_EIO;
 }
 
 /* Busy-wait n jiffies (~1/60 s each) using the KERNAL jiffy low byte ($A2),
@@ -524,12 +586,13 @@ bbs_err_t net_tx_raw(const void *buf, u16 n, u16 *sent)
 {
     if (s_state != NET_CONNECTED) { *sent = 0; return BBS_EAGAIN; }
     const u8 *p = (const u8 *)buf;
-    for (u16 i = 0; i < n; i++) {
-        acia_putc(p[i]);
-        if (p[i] == 0xFF) acia_putc(0xFF);   /* telnet binary escape */
+    u16 i;
+    for (i = 0; i < n; i++) {
+        if (!acia_putc(p[i])) break;
+        if (p[i] == 0xFF && !acia_putc(0xFF)) break;   /* telnet binary escape */
     }
-    *sent = n;
-    return BBS_OK;
+    *sent = i;
+    return (i == n) ? BBS_OK : BBS_EIO;
 }
 
 bbs_err_t net_disconnect(void)
@@ -553,8 +616,20 @@ bbs_err_t net_disconnect(void)
      * then re-assert DTR and move to NET_IDLE ready for the next caller.
      * Under VICE (s_dsr_was_active==FALSE), NET_DROPPING transitions to NET_IDLE
      * immediately since DSR is never driven. */
+    /* DTR low for a measurable interval, then back up, right here. It used
+     * to go low here and back up at the next net_rx() — milliseconds — and
+     * the Ultimate did not act on a pulse that short: it kept its (dead)
+     * session, DSR stayed asserted, and the BBS sat at WFC never seeing the
+     * inactive edge it needs before it will answer, until the Ultimate was
+     * rebooted (issue #31). Half a second is well past what any modem
+     * needs, and short enough that a caller arriving during the hangup is
+     * rarely refused. */
     acia_set_cmd(CMD_DTR_OFF);
+    delay_jiffies(30);
+    acia_set_cmd(CMD_DTR_ON);
     s_state              = NET_DROPPING;
+    s_tx_stalls          = 0;
+    s_tx_dead            = FALSE;
     s_saw_dsr_inactive   = FALSE;
     s_dsr_was_active     = FALSE;
     at_parser_init(&s_at);

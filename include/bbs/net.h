@@ -69,6 +69,7 @@ bbs_err_t net_disconnect(void);
  * RTS back. Nestable: only the outermost pair touches the line. Both are
  * no-ops until net_init() has brought the ACIA up. The disk HAL calls them
  * around every KERNAL I/O; see issue #27. */
+void net_keepalive(void);
 void net_rx_hold(void);
 void net_rx_release(void);
 
