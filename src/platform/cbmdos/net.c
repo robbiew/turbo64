@@ -141,7 +141,7 @@ tbloop:
     lda s_rx_tail
     sec
     sbc s_rx_head
-    cmp #64
+    cmp #16
     bcc tbloop
     lda s_cmd_shadow
     and #$f3            // ~CMD_RTS_MASK: deassert RTS, keep DTR
@@ -543,7 +543,7 @@ bbs_err_t net_rx(void *buf, u16 want, u16 *got)
 
     /* Re-assert RTS once the ring has drained below the low-water mark (the
      * ISR deasserts it at high-water). Skipped while a disk hold owns RTS. */
-    if (s_hold_depth == 0 && (u8)(s_rx_tail - s_rx_head) < 16u) {
+    if (s_hold_depth == 0 && (u8)(s_rx_tail - s_rx_head) < 8u) {
         ACIA_CMD = s_cmd_shadow;
     }
 

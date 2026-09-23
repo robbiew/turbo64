@@ -552,7 +552,13 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
                 fpos = 0;
                 break;                           /* -> outer loop re-ZRPOS(0) */
             }
-            if (r < 0) { disk_close(); session_emit(s, "\r\nRECEIVE ERROR.\r\n"); return ZMODEM_ERR; }
+            if (r < 0) {
+                char msg[40];
+                disk_close();
+                sprintf(msg, "\r\nRECEIVE ERROR AT %lu.\r\n", (unsigned long)fpos);
+                session_emit(s, msg);
+                return ZMODEM_ERR;
+            }
 
             if (marker == ZCRCQ || marker == ZCRCW) z_send_hex_hdr(ZACK, fpos);
             if (marker == ZCRCW || marker == ZCRCE) break;   /* frame end -> next header */
@@ -584,6 +590,10 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
 
     z_tx_put('O'); z_tx_put('O'); z_tx_flush();
 
-    session_emit(s, "\r\nTRANSFER COMPLETE.\r\n");
+    {
+        char msg[40];
+        sprintf(msg, "\r\nTRANSFER COMPLETE (%lu BYTES).\r\n", (unsigned long)fpos);
+        session_emit(s, msg);
+    }
     return ZMODEM_OK;
 }
