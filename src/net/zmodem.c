@@ -41,8 +41,12 @@ static u8  z_rxbuf[255]; /* disk-read / data-packet accumulation buffer */
  * and the RX ring is 128 bytes, so anything over the buffer was dropped
  * (and skipped from the CRC), the subpacket CRC failed, and the sender
  * resent the same oversized block forever. Advertising a 64-byte buffer and
- * no overlap makes lrzsz/SyncTerm send <=64-byte subpackets and wait for our
- * ZACK — flow the 128-byte ring and the byte-at-a-time drain keep up with. */
+ * no overlap asks a sender to send <=64-byte subpackets and wait for our
+ * ZACK — flow the 128-byte ring and the byte-at-a-time drain keep up with.
+ * A sender that honours rxbuflen (per the ZMODEM spec) does this; lrzsz sz
+ * 0.12.20 does NOT (it uses rxbuflen only for window/ACK cadence and still
+ * streams 1 KB subpackets), so an lrzsz upload is not fixed by this alone —
+ * the receiver must accept a large streamed subpacket, which is issue #36. */
 #define Z_RXBUF 64u
 #define ZRINIT_INFO (((u32)CANFDX << 24) | Z_RXBUF)
 static u8  z_tx[160];    /* tx staging; flushed via net_tx_raw */
