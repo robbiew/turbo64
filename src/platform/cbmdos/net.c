@@ -278,6 +278,8 @@ static modem_type_t resolve_modem_type(void)
  * the session ends and net_disconnect()'s DTR drop clears the firmware —
  * seconds instead of the idle timeout's minutes. A live but slow client
  * would have to stop reading for the whole span to trip it. */
+static void delay_jiffies(u8 n);   /* defined below; used by net_init() */
+
 #define TX_STALL_LIMIT 3
 static u8 s_tx_stalls;
 
@@ -355,6 +357,18 @@ bbs_err_t net_init(void)
     }
     s_tb_latch = (bbs_cfg.baud_rate == 38400) ? TIMERB_LATCH_FAST : TIMERB_LATCH_SLOW;
     ACIA_CTL = ctl;
+    /* If the line already shows a caller before we have even raised DTR,
+     * it is a session the modem kept across our reset — on the Ultimate,
+     * one whose TCP peer is long gone (issue #31), with a byte stuck in the
+     * transmitter and no way to answer a real caller. Drop DTR for a second
+     * first: standard modem practice, and it tells the firmware to tear
+     * the stale session down. Measured on the C64U: a BOOT with the modem
+     * in that state used to sit at WFC unable to answer until the Ultimate
+     * was rebooted. */
+    if ((ACIA_STATUS & 0x40) == 0) {
+        acia_set_cmd(CMD_DTR_OFF);
+        delay_jiffies(60);
+    }
     acia_set_cmd(CMD_DTR_ON);
 
     acia_puts("ATZ\r");
@@ -438,7 +452,6 @@ bbs_err_t net_rx(void *buf, u16 want, u16 *got)
         bool_t dsr_active = ((ACIA_STATUS & 0x40) == 0) ? TRUE : FALSE;
         if (!dsr_active || !s_dsr_was_active) {
             s_state = NET_IDLE;
-            acia_set_cmd(CMD_DTR_ON);
             s_saw_dsr_inactive = TRUE;
         }
     }
@@ -580,7 +593,17 @@ bbs_err_t net_disconnect(void)
      * then re-assert DTR and move to NET_IDLE ready for the next caller.
      * Under VICE (s_dsr_was_active==FALSE), NET_DROPPING transitions to NET_IDLE
      * immediately since DSR is never driven. */
+    /* DTR low for a measurable interval, then back up, right here. It used
+     * to go low here and back up at the next net_rx() — milliseconds — and
+     * the Ultimate did not act on a pulse that short: it kept its (dead)
+     * session, DSR stayed asserted, and the BBS sat at WFC never seeing the
+     * inactive edge it needs before it will answer, until the Ultimate was
+     * rebooted (issue #31). Half a second is well past what any modem
+     * needs, and short enough that a caller arriving during the hangup is
+     * rarely refused. */
     acia_set_cmd(CMD_DTR_OFF);
+    delay_jiffies(30);
+    acia_set_cmd(CMD_DTR_ON);
     s_state              = NET_DROPPING;
     s_tx_stalls          = 0;
     s_saw_dsr_inactive   = FALSE;
