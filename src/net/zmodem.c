@@ -49,6 +49,7 @@ static u8  z_rxbuf[255]; /* disk-read / data-packet accumulation buffer */
  * the receiver must accept a large streamed subpacket, which is issue #36. */
 #define Z_RXBUF 64u
 #define ZRINIT_INFO (((u32)CANFDX << 24) | Z_RXBUF)
+#define Z_FLUSH 32u   /* data-subpacket flush granularity — see z_recv_data_to_disk */
 static u8  z_tx[160];    /* tx staging; flushed via net_tx_raw */
 static u8  z_txlen;
 static u8  z_cancel_cnt; /* consecutive ZDLE bytes seen (5 = abort) */
@@ -279,6 +280,59 @@ static i16 z_recv_data_pkt(const session_t *s, u8 *buf, u8 bufsize, u8 *marker)
     }
 }
 
+/* Write-through subpacket receiver: each data byte goes straight to the open
+ * disk file instead of a RAM buffer, so a streamed 1 KB subpacket cannot
+ * overflow anything (z_rxbuf is 255, the RX ring 128) — the per-byte
+ * disk_putc() drops RTS while it writes, which pauses the sender and keeps
+ * the ring drained. CRC is accumulated on the fly. *nbytes gets the byte
+ * count (for fpos), *marker the closing marker. Returns 0 ok, -1 timeout,
+ * -2 cancel, -3 CRC error (bytes already on disk — caller must truncate and
+ * restart), -4 disk write error. */
+static i16 z_recv_data_to_disk(const session_t *s, u16 *nbytes, u8 *marker)
+{
+    u16 crc = 0, n = 0;
+    u8  blk = 0;                 /* bytes buffered in z_rxbuf awaiting a flush */
+    for (;;) {
+        i16 c = z_rx_byte(s);
+        u8  raw;
+        if (c < 0) { *nbytes = n; return (i16)c; }
+        if ((u8)c != ZDLE) {
+            raw = (u8)c;
+        } else {
+            c = z_rx_byte(s); if (c < 0) { *nbytes = n; return (i16)c; }
+            {
+                u8 eb = (u8)c;
+                if (eb == ZCRCE || eb == ZCRCG || eb == ZCRCQ || eb == ZCRCW) {
+                    u8 ch2, cl2;
+                    crc = z_crc16_byte(crc, eb);
+                    *marker = eb;
+                    c = z_rx_byte(s); if (c < 0) { *nbytes = n; return (i16)c; }
+                    ch2 = ((u8)c == ZDLE) ? (c = z_rx_byte(s), (u8)c ^ 0x40) : (u8)c;
+                    c = z_rx_byte(s); if (c < 0) { *nbytes = n; return (i16)c; }
+                    cl2 = ((u8)c == ZDLE) ? (c = z_rx_byte(s), (u8)c ^ 0x40) : (u8)c;
+                    *nbytes = n;
+                    if (crc != (u16)(((u16)ch2 << 8) | cl2)) return -3;  /* leave blk unwritten */
+                    if (blk && disk_write(z_rxbuf, blk) != BBS_OK) return -4;
+                    return 0;
+                }
+                raw = eb ^ 0x40;   /* escaped data byte */
+            }
+        }
+        crc = z_crc16_byte(crc, raw);
+        z_rxbuf[blk++] = raw; n++;
+        /* Flush well before the 128-byte RX ring can fill. During accumulation
+         * RTS is high and the C64 (barely keeping up with 38400 while doing
+         * CRC per byte) falls behind; measured, the ring overran ~120 bytes
+         * into a streamed subpacket. disk_write holds RTS for its duration,
+         * pausing the sender so the ring drains, so flushing every 32 bytes
+         * keeps the backlog well under the ring. */
+        if (blk == Z_FLUSH) {
+            if (disk_write(z_rxbuf, blk) != BBS_OK) { *nbytes = n; return -4; }
+            blk = 0;
+        }
+    }
+}
+
 /* Send 8 × CAN to abort */
 static void z_send_cancel(void)
 {
@@ -415,6 +469,7 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
     u32    fpos = 0;
     u8     retries;
     bool_t file_open = FALSE;
+    const char *dest;
 
     z_cancel_cnt = 0; z_txlen = 0;
 
@@ -445,64 +500,70 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
     if (pkt_len < 0) { z_send_cancel(); return ZMODEM_ERR; }
 
     /* Open destination file: use sysop-supplied name or sender's name */
-    {
-        const char *dest = (filename && filename[0]) ? filename
-                                                     : (const char *)z_rxbuf;
-        if (disk_open(device, drive, dest, DISK_OVER) != BBS_OK) {
-            session_emit(s, "\r\nCANNOT OPEN FILE.\r\n");
-            z_send_cancel(); return ZMODEM_ERR;
-        }
-        file_open = TRUE;
+    dest = (filename && filename[0]) ? filename : (const char *)z_rxbuf;
+    if (disk_open(device, drive, dest, DISK_OVER) != BBS_OK) {
+        session_emit(s, "\r\nCANNOT OPEN FILE.\r\n");
+        z_send_cancel(); return ZMODEM_ERR;
     }
+    file_open = TRUE;
 
-    /* Tell sender to start from 0 */
-    z_send_hex_hdr(ZRPOS, 0);
+    /* Data phase. The sender streams ZCRCG subpackets which we write straight
+     * to disk (z_recv_data_to_disk) — no buffer big enough to hold a 1 KB
+     * subpacket is needed, and the per-byte disk write's RTS hold paces the
+     * sender. A ZRPOS(fpos) restarts the file from a known offset; since a
+     * SEQ file cannot be rewound, a CRC error truncates and restarts from 0.
+     * Structured as: (re)position, read a ZDATA header, stream subpackets to
+     * the end of the frame, then read the next header (another ZDATA, or ZEOF
+     * to finish). */
+    for (;;) {                                   /* (re)position + data frames */
+        z_send_hex_hdr(ZRPOS, fpos);
 
-    /* Wait for ZDATA */
-    frame = 0;
-    for (retries = 0; retries < 5; retries++) {
-        frame = z_recv_header(s, &pos);
-        if (frame == ZDATA) break;
-        if (frame == ZABORT || frame == -2) { disk_close(); z_send_cancel(); return ZMODEM_CANCEL; }
-    }
-    if (frame != ZDATA) {
-        disk_close();
-        session_emit(s, "\r\nNO DATA FROM SENDER.\r\n");
-        return ZMODEM_ERR;
-    }
-
-    /* Receive data subpackets until ZCRCE */
-    for (;;) {
-        pkt_len = z_recv_data_pkt(s, z_rxbuf, sizeof(z_rxbuf), &marker);
-
-        if (pkt_len == -2) {
-            disk_close(); z_send_cancel(); return ZMODEM_CANCEL;
+        for (retries = 0; retries < 8; retries++) {   /* wait for ZDATA/ZEOF */
+            frame = z_recv_header(s, &pos);
+            if (frame == ZDATA || frame == ZEOF) break;
+            if (frame == ZABORT || frame == -2) { disk_close(); z_send_cancel(); return ZMODEM_CANCEL; }
+            if (frame == ZFIN) { frame = ZEOF; break; }
         }
-        if (pkt_len == -3) {
-            /* CRC error — request resend from last good position */
-            z_send_hex_hdr(ZRPOS, fpos);
-            continue;
-        }
-        if (pkt_len < 0) {
-            disk_close(); session_emit(s, "\r\nRECEIVE ERROR.\r\n"); return ZMODEM_ERR;
+        if (frame == ZEOF) break;                /* no (more) data — done */
+        if (frame != ZDATA) {
+            disk_close();
+            session_emit(s, "\r\nNO DATA FROM SENDER.\r\n");
+            return ZMODEM_ERR;
         }
 
-        /* Write received bytes to disk */
-        if (pkt_len > 0) {
-            u8 wi;
-            for (wi = 0; wi < (u8)pkt_len; wi++) {
-                if (disk_putc((char)z_rxbuf[wi]) != BBS_OK) {
+        for (;;) {                               /* subpackets in this frame */
+            u16 n = 0;
+            i16 r = z_recv_data_to_disk(s, &n, &marker);
+            fpos += (u32)n;
+
+            if (r == -2) { disk_close(); z_send_cancel(); return ZMODEM_CANCEL; }
+            if (r == -4) {
+                disk_close(); z_send_cancel();
+                session_emit(s, "\r\nDISK WRITE ERROR.\r\n");
+                return ZMODEM_ERR;
+            }
+            if (r == -3) {
+                /* Bad subpacket — its bytes are already on disk and a SEQ file
+                 * cannot be rewound, so discard the whole file and restart at
+                 * 0. On a clean TCP path this does not happen. */
+                if (disk_open(device, drive, dest, DISK_OVER) != BBS_OK) {
                     disk_close(); z_send_cancel();
-                    session_emit(s, "\r\nDISK WRITE ERROR.\r\n");
+                    session_emit(s, "\r\nRECEIVE ERROR.\r\n");
                     return ZMODEM_ERR;
                 }
+                fpos = 0;
+                break;                           /* -> outer loop re-ZRPOS(0) */
             }
-            fpos += (u32)(u8)pkt_len;
-        }
+            if (r < 0) { disk_close(); session_emit(s, "\r\nRECEIVE ERROR.\r\n"); return ZMODEM_ERR; }
 
-        if (marker == ZCRCW || marker == ZCRCQ) z_send_hex_hdr(ZACK, fpos);
-        if (marker == ZCRCE) break;
-        /* ZCRCG: continue */
+            if (marker == ZCRCQ || marker == ZCRCW) z_send_hex_hdr(ZACK, fpos);
+            if (marker == ZCRCW || marker == ZCRCE) break;   /* frame end -> next header */
+            /* ZCRCG / ZCRCQ: more subpackets follow with no header */
+        }
+        if (marker == ZCRCE || marker == ZCRCW) {
+            /* end of a data frame; loop reads the next header (ZDATA or ZEOF).
+             * fpos is where we are, so the ZRPOS at the top just confirms it. */
+        }
     }
 
     disk_close();
