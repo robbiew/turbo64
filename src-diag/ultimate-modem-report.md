@@ -19,8 +19,10 @@ measured on the hardware described; nothing is inferred from documentation.
 
 After some caller disconnects, the emulated ACIA stops responding entirely:
 
-- `$DE01` (status) reads `$00`. A live 6551 never reads `$00`: TDRE (bit 4) is set
-  whenever the transmitter is idle. Before the event it reads `$50`/`$10` as expected.
+- `$DE01` (status) reads `$00` **and stays there** when no byte is pending. `$00` is a
+  valid transient on a live 6551 mid-transmit (TDRE momentarily clear), so the diagnostic
+  is that it persists in the idle state — the delayed poll below reads it seconds after any
+  traffic. Before the event the idle status reads `$50`/`$10` as expected.
 - `$DE02` (command) reads `$FF`; writes to it (DTR, RTS) have no observable effect.
 - The C64's transmit register is never drained; DSR (status bit 6) reads active with
   no TCP session established.
@@ -37,14 +39,17 @@ After some caller disconnects, the emulated ACIA stops responding entirely:
 Rate is roughly 1 in 5–6 calls with this exact pattern; 20+ calls with the same steps
 typed at human speed (80 ms per character) never triggered it.
 
+The controllable conditions (what the client does):
 1. Open a TCP connection to port 3000; the BBS answers, asserts DTR, DSR goes active.
 2. At the BBS's first prompt send one byte (`2`).
-3. At the next prompt send **16 bytes back-to-back** (`ABCDEFGHIJKLMNO` + CR), i.e. as
-   one TCP segment / at full line rate.
+3. At the next prompt write **16 bytes in a single `send()` with no inter-character
+   delay** (`ABCDEFGHIJKLMNO` + CR). On this LAN that left the client stack as one TCP
+   segment (observed, not required — the trigger is the burst write, not a guaranteed
+   packet shape).
 4. At the following prompt send one more byte (`N`).
 5. About 1.5 s later close the TCP socket from the client (`close()`, no further data).
-6. Read `$DE01` ~2 s later. Normal: `$50`. Failure: `$00`, and the modem stays dead
-   until a firmware reboot.
+6. Read `$DE01` ~2 s later. Normal: `$50`. Failure: `$00`, persisting until a firmware
+   reboot.
 
 The C64 program's behaviour during step 5 is a hangup on carrier loss: DTR is dropped
 for 0.5 s and re-asserted. The same failure was also reproduced with a build that
