@@ -339,8 +339,7 @@ static void admin_access_menu(u8 device)
   for (;;) {
     char ch;
     ui_screen_header("ACCESS LEVELS");
-    printf("LVL NAME         CALLS  MINS  FLAGS\n");
-    printf("--- ------------ -----  ----  --------\n");
+    printf("LVL NAME         CALLS MINS FLAGS\n");
     for (i = 0; i < ACCESS_LEVEL_COUNT; i++) {
       for (j = 0; j < 8; j++)
         fl[j] = (s_levels[i].flags & s_flag_bits[j]) ? s_flag_chars[j] : '-';
