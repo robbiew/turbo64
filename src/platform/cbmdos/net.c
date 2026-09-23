@@ -171,8 +171,15 @@ static void net_irq_setup(void)
  * during the disk-heavy boot adds needless load.  net_rx() re-arms defensively. */
 void net_irq_arm(void)
 {
-    s_rx_head = 0;
-    s_rx_tail = 0;
+    /* Only reset the ring if the poll is not already running: boot-time
+     * disk I/O after net_init() re-arms it through net_rx_release(), and
+     * whatever a caller sent meanwhile is sitting in the ring — zeroing it
+     * here would discard that (PR #32 review). */
+    if (*(void * volatile *)0x0314 != (void *)acia_irq_isr ||
+        (*(volatile u8 *)0xDC0F & 0x01) == 0) {
+        s_rx_head = 0;
+        s_rx_tail = 0;
+    }
     net_irq_setup();
 }
 
