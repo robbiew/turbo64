@@ -270,14 +270,41 @@ static modem_type_t resolve_modem_type(void)
 #pragma data(data)
 #endif
 
+/* Consecutive bytes the transmitter refused to take (TDRE never set within
+ * the spin timeout, ~0.6 s each). On the Ultimate this is what a caller who
+ * closed their TCP session without the firmware noticing looks like: DSR
+ * stays asserted, the socket is dead, and TX stops draining (issue #31).
+ * TX_STALL_LIMIT such bytes while connected is treated as carrier loss so
+ * the session ends and net_disconnect()'s DTR drop clears the firmware —
+ * seconds instead of the idle timeout's minutes. A live but slow client
+ * would have to stop reading for the whole span to trip it. */
+#define TX_STALL_LIMIT 3
+static u8 s_tx_stalls;
+
 static void acia_putc(u8 b)
 {
     u16 timeout = 0;
     while ((ACIA_STATUS & ST_TX_EMPTY) == 0) {
         // cppcheck-suppress knownConditionTrueFalse
-        if (++timeout == 0) return;
+        if (++timeout == 0) {
+            if (s_state == NET_CONNECTED && ++s_tx_stalls >= TX_STALL_LIMIT) {
+                s_state = NET_DROPPING;
+                at_parser_init(&s_at);
+            }
+            return;
+        }
     }
+    s_tx_stalls = 0;
     ACIA_DATA = b;
+}
+
+/* One invisible byte to the caller (NUL: ignored by telnet clients and by
+ * PETSCII/ANSI terminals alike) so that a dead socket shows up as a TX
+ * stall even while the BBS is only waiting for input. sess_idle_check()
+ * sends it every few idle seconds. */
+void net_keepalive(void)
+{
+    if (s_state == NET_CONNECTED) acia_putc(0);
 }
 
 static void acia_puts(const char *s)
@@ -555,6 +582,7 @@ bbs_err_t net_disconnect(void)
      * immediately since DSR is never driven. */
     acia_set_cmd(CMD_DTR_OFF);
     s_state              = NET_DROPPING;
+    s_tx_stalls          = 0;
     s_saw_dsr_inactive   = FALSE;
     s_dsr_was_active     = FALSE;
     at_parser_init(&s_at);
