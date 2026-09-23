@@ -468,7 +468,6 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
     i16    pkt_len;
     u32    fpos = 0;
     u8     retries;
-    bool_t file_open = FALSE;
     const char *dest;
 
     z_cancel_cnt = 0; z_txlen = 0;
@@ -505,7 +504,6 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
         session_emit(s, "\r\nCANNOT OPEN FILE.\r\n");
         z_send_cancel(); return ZMODEM_ERR;
     }
-    file_open = TRUE;
 
     /* Data phase. The sender streams ZCRCG subpackets which we write straight
      * to disk (z_recv_data_to_disk) — no buffer big enough to hold a 1 KB
@@ -567,7 +565,6 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
     }
 
     disk_close();
-    file_open = FALSE;
 
     /* Ready for next file (or ZFIN) */
     z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
@@ -588,6 +585,5 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
     z_tx_put('O'); z_tx_put('O'); z_tx_flush();
 
     session_emit(s, "\r\nTRANSFER COMPLETE.\r\n");
-    (void)file_open;
     return ZMODEM_OK;
 }
