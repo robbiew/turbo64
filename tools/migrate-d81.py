@@ -115,17 +115,38 @@ def host_name(canon):
     return canon.lower() + ".seq"
 
 
+def _record_blank(rec):
+    """A record that was never written. All-zero, or CBM DOS's own marker: the
+    drive puts $FF in the first byte of every record it allocates and leaves
+    the rest zero. The REL build never sees such a record as data (an
+    unwritten record reads back as that single byte, which the readers treat
+    as end of file), but copied verbatim into a SEQ file it becomes a real
+    40-byte record whose first field is 255 — e.g. a file-area id of 255,
+    which made file_area_create() report the table full on SoftIEC (measured:
+    CONFIGURE-SIEC "CREATE FAILED (CODE 3)" on a migrated UDS)."""
+    if not any(rec):
+        return True
+    return rec[0] == 0xFF and not any(rec[1:])
+
+
 def trim_records(data, record_size):
-    """Drop trailing all-zero records; pad a ragged tail to a whole record."""
+    """Drop trailing never-written records; pad a ragged tail to a whole
+    record; blank out never-written records in the middle so a $FF marker
+    can never be read as data."""
     if record_size == 0:
         return b""
     if len(data) % record_size:
         data = data + bytes(record_size - (len(data) % record_size))
+    out = bytearray()
     last = 0
     for i in range(0, len(data), record_size):
-        if any(data[i:i + record_size]):
+        rec = data[i:i + record_size]
+        if _record_blank(rec):
+            out += bytes(record_size)
+        else:
+            out += rec
             last = i + record_size
-    return data[:last]
+    return bytes(out[:last])
 
 
 def device_spec(device, base, section):
@@ -410,6 +431,11 @@ def main():
         with open(tmp, "rb") as f:
             data = f.read()
         out = trim_records(data, size) if size else data
+        if size and not out:
+            # Nothing but never-written records: leave the file out, the same
+            # as a set that does not exist yet (the BBS creates it on first use).
+            converted.append(f"{canon}: {len(data)} bytes, no written records -> not migrated")
+            continue
         with open(os.path.join(args.outdir, section, host_name(canon)), "wb") as f:
             f.write(out)
         if size:

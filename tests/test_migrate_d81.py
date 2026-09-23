@@ -27,6 +27,15 @@ check("trim.ragged", mig.trim_records(b"\x01" * 45, 30), b"\x01" * 45 + bytes(15
 
 check("trim.zero_size", mig.trim_records(b"\x01" * 30, 0), b"")
 
+# CBM DOS marks a never-written REL record with $FF in its first byte: such
+# records are not data. Trailing ones are dropped; one in the middle is
+# blanked so a reader never sees a field of 255.
+check("trim.ff_marker_trailing", mig.trim_records(b"\xff" + bytes(39) + b"\xff" + bytes(39), 40), b"")
+check("trim.ff_marker_middle",
+      mig.trim_records(b"\x01" + bytes(39) + b"\xff" + bytes(39) + b"\x02" + bytes(39), 40),
+      b"\x01" + bytes(39) + bytes(40) + b"\x02" + bytes(39))
+check("trim.ff_with_data_kept", mig.trim_records(b"\xff\x01" + bytes(38), 40), b"\xff\x01" + bytes(38))
+
 check("spec.system", mig.device_spec(11, "/USB1/TURBO64", "SYSTEM"),
       "11;/USB1/TURBO64/SYSTEM")
 check("spec.trailing_slash", mig.device_spec(11, "/USB1/TURBO64/", "MSGS"),
