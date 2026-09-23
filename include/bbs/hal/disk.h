@@ -145,6 +145,12 @@ void disk_set_section_path(u8 index, const char *path);
  *                    partition-0 install (disk_select_partition() already
  *                    sends nothing for partition 0 — see its comment). */
 void disk_reset_cursor_root(u8 device);
+#ifdef T64_STORE_SEQ
+/* Capture the tree root from the DEV_SYSTEM path (cfg_init() calls this
+ * once); CD there, failing closed if none was captured. */
+void      disk_set_root_from(const char *system_path);
+bbs_err_t disk_cd_root(u8 device);
+#endif
 
 /* Read drive status into disk_errmsg. Returns numeric error code (0=OK). */
 u8 disk_status(u8 device);

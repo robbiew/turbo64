@@ -274,8 +274,7 @@ static void do_idle(u8 device)
   sprintf(s_idle, "%u", (unsigned)bbs_cfg.idle_timeout_mins);
 
   ui_screen_header("CONFIG: IDLE TIMEOUT");
-  printf("MINUTES OF KEYBOARD IDLE BEFORE\n");
-  printf("A CALLER IS DROPPED. 0 = OFF.\n\n");
+  printf("IDLE MINUTES BEFORE DROP (0=OFF)\n\n");
 
   FIELD_INIT(f, "IDLEMINS", s_idle, 2);
   f.validate = validate_idle;
