@@ -315,7 +315,12 @@ static __noinline bbs_err_t boot_sequence(void) {
   }
   s_boot_acia = net_acia_status();
   printf("  ACIA STATUS: $%02X\n", (unsigned)s_boot_acia);
-  /* $10 = TX empty (normal idle). Bit 6=0 means DSR active. */
+  /* $10 = TX empty (normal idle). Bit 6=0 means DSR active. A live 6551
+   * never reads $00 (TDRE is set whenever the transmitter is idle): on a
+   * C64 Ultimate it means the ACIA/modem emulation has died and nothing
+   * the C64 does — DTR, RTS, a reset — brings it back (issue #31). Say so,
+   * because the boot otherwise looks normal and no caller can ever get in. */
+  if (s_boot_acia == 0x00) main_print("  ACIA DEAD? REBOOT THE ULTIMATE\n");
   main_print(((s_boot_acia & 0x40) != 0) ? "  DSR: INACTIVE\n" : "  DSR: ACTIVE!\n");
   main_print("  DEVICE: ");
   if (bbs_cfg.device_system != bbs_cfg.device_msgs) {
