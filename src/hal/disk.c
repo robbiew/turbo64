@@ -311,7 +311,21 @@ bbs_err_t disk_open(u8 device, u8 drive, const char *name, disk_mode_t mode)
     case DISK_WRITE:  sprintf(fname, "@0:%s,S,W", name);
                       goto do_open;
     case DISK_APPEND: suffix = ",S,A"; break;
-    case DISK_OVER:   sprintf(fname, "@0:%s,S,W", name);
+    case DISK_OVER:
+#ifdef T64_STORE_SEQ
+                      /* SoftIEC does not honour the "@" replace prefix on a
+                       * file that already exists (measured: @0:NAME,S,W keeps
+                       * the old file, DOS 63) — it only works when NAME is
+                       * absent, so a re-upload or any second write failed with
+                       * "CANNOT OPEN FILE". Scratch first, then create plain,
+                       * the same idiom rel_seq.c and cfg_save() use. On the
+                       * REL build the drive's own @-replace is correct and
+                       * left as-is. */
+                      (void)disk_scratch(device, drive, name);
+                      sprintf(fname, "0:%s,S,W", name);
+#else
+                      sprintf(fname, "@0:%s,S,W", name);
+#endif
                       goto do_open;
     default:          suffix = ",S,W"; break;
     }

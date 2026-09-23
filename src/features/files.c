@@ -173,8 +173,14 @@ static void fl_download(session_t *s, const ud_area_record_t *area)
     ftx(s, "PROTOCOL: (P)UNTER (Z)MODEM (ENTER=CANCEL): ");
     while (!sess_read_key(s, &ch)) if (!sess_carrier_ok(s)) return;
     fnl(s);
+    /* Transfers open the file on DEV_FILES (device + section/partition) like
+     * the index and listings do. area->device is a hard-coded 8 that CONFIGURE
+     * never exposes, so using it sent every transfer to device 8 regardless
+     * of where the area's index lived: nowhere useful on a SoftIEC install
+     * (device 11), and a different disk from the index on the shipped .d81
+     * config (DEV_FILES=9). */
     if (ch == 'Z' || ch == 'z') {
-        if (xfer_zmodem_send(s, area->device, bbs_cfg.drive_files, fe.filename) == XFER_OK) {
+        if (xfer_zmodem_send(s, bbs_cfg.device_files, bbs_cfg.drive_files, fe.filename) == XFER_OK) {
             fe.downloads++;
             fentry_save(area->id, &fe, bbs_cfg.device_files);
             fl(s, "TRANSFER COMPLETE.");
@@ -185,7 +191,7 @@ static void fl_download(session_t *s, const ud_area_record_t *area)
 
     { char msg[36]; sprintf(msg, "PUNTER: %s", fe.filename); fl(s, msg); }
     fl(s, "BEGIN PUNTER RECEIVE NOW...");
-    pr = punter_send(s, area->device, bbs_cfg.drive_files, fe.filename, 1);
+    pr = punter_send(s, bbs_cfg.device_files, bbs_cfg.drive_files, fe.filename, 1);
     if (pr == PUNTER_OK) {
         fe.downloads++;
         fentry_save(area->id, &fe, bbs_cfg.device_files);
@@ -220,7 +226,7 @@ static void fl_upload(session_t *s, ud_area_record_t *area)
     while (!sess_read_key(s, &key)) if (!sess_carrier_ok(s)) return;
     fnl(s);
     if (key == 'Z' || key == 'z') {
-        if (xfer_zmodem_recv(s, area->device, bbs_cfg.drive_files, fname) == XFER_OK) {
+        if (xfer_zmodem_recv(s, bbs_cfg.device_files, bbs_cfg.drive_files, fname) == XFER_OK) {
             memset(&fe, 0, sizeof(fe));
             strncpy(fe.filename, fname, 15);
             strncpy(fe.description, desc, 40);
@@ -238,7 +244,7 @@ static void fl_upload(session_t *s, ud_area_record_t *area)
 
     { char msg[36]; sprintf(msg, "PUNTER UPLOAD: %s", fname); fl(s, msg); }
     fl(s, "BEGIN PUNTER SEND NOW...");
-    pr = punter_recv(s, area->device, bbs_cfg.drive_files, fname, &filetype);
+    pr = punter_recv(s, bbs_cfg.device_files, bbs_cfg.drive_files, fname, &filetype);
 
     if (pr == PUNTER_OK) {
         memset(&fe, 0, sizeof(fe));
