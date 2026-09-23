@@ -30,11 +30,19 @@ check("trim.zero_size", mig.trim_records(b"\x01" * 30, 0), b"")
 # CBM DOS marks a never-written REL record with $FF in its first byte: such
 # records are not data. Trailing ones are dropped; one in the middle is
 # blanked so a reader never sees a field of 255.
-check("trim.ff_marker_trailing", mig.trim_records(b"\xff" + bytes(39) + b"\xff" + bytes(39), 40), b"")
-check("trim.ff_marker_middle",
-      mig.trim_records(b"\x01" + bytes(39) + b"\xff" + bytes(39) + b"\x02" + bytes(39), 40),
+# id-keyed sets (UDS/BOARDS/DOORS): the $FF marker is a never-written record,
+# blanked so its id-255 can't read as data.
+check("trim.ff_trailing_idkeyed", mig.trim_records(b"\xff" + bytes(39) + b"\xff" + bytes(39), 40, id_keyed=True), b"")
+check("trim.ff_middle_idkeyed",
+      mig.trim_records(b"\x01" + bytes(39) + b"\xff" + bytes(39) + b"\x02" + bytes(39), 40, id_keyed=True),
       b"\x01" + bytes(39) + bytes(40) + b"\x02" + bytes(39))
-check("trim.ff_with_data_kept", mig.trim_records(b"\xff\x01" + bytes(38), 40), b"\xff\x01" + bytes(38))
+check("trim.ff_with_data_kept", mig.trim_records(b"\xff\x01" + bytes(38), 40, id_keyed=True), b"\xff\x01" + bytes(38))
+# position-keyed sets (default): an $FF-marker record is legitimate data
+# (e.g. USR.PTR "read msg 255 on board 1") and must survive untouched.
+check("trim.ff_preserved_default",
+      mig.trim_records(b"\x01" + bytes(39) + b"\xff" + bytes(39), 40),
+      b"\x01" + bytes(39) + b"\xff" + bytes(39))
+check("trim.usrptr_ff_kept", mig.trim_records(b"\xff" + bytes(39), 40), b"\xff" + bytes(39))
 
 check("spec.system", mig.device_spec(11, "/USB1/TURBO64", "SYSTEM"),
       "11;/USB1/TURBO64/SYSTEM")

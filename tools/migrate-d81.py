@@ -54,6 +54,18 @@ RECORD_SETS = {
 }
 SECTIONS = ("SYSTEM", "MSGS", "FILES", "DOORS")
 
+# Record sets whose first byte is a directory id the BBS scans for the
+# "highest id in use" when creating a new entry (file_area_create scans UDS,
+# board_create BOARDS, door create DOORS). For these, a never-written REL
+# record — CBM DOS leaves $FF in byte 0, rest zero — reads as id 255 and
+# makes the create report the table full. The position-keyed sets (USR LOG,
+# USR PROF, USR.PTR, USR.DAY, VOTE1, B<n>.IDX, UD<n>) are addressed by record
+# number and store arbitrary bytes, so an $FF first byte is legitimate data
+# there — e.g. USR.PTR holds per-board last-read message numbers, and a user
+# who read through message 255 on board 1 has exactly b"\xff\x00...". Never
+# blank those. (Reported on PR #35 by Codex and Copilot.)
+ID_KEYED_SETS = {"UDS", "BOARDS", "DOORS"}
+
 # Per-board / per-area REL sets that only exist once boards/areas have been
 # created (src/data/messages.c: "B%u.IDX"; src/data/file_entries.c: "UD%u").
 # Record sizes: include/bbs/records.h RECORD_SIZE_MSG_IDX / RECORD_SIZE_FILE_ENTRY.
@@ -115,24 +127,19 @@ def host_name(canon):
     return canon.lower() + ".seq"
 
 
-def _record_blank(rec):
-    """A record that was never written. All-zero, or CBM DOS's own marker: the
-    drive puts $FF in the first byte of every record it allocates and leaves
-    the rest zero. The REL build never sees such a record as data (an
-    unwritten record reads back as that single byte, which the readers treat
-    as end of file), but copied verbatim into a SEQ file it becomes a real
-    40-byte record whose first field is 255 — e.g. a file-area id of 255,
-    which made file_area_create() report the table full on SoftIEC (measured:
-    CONFIGURE-SIEC "CREATE FAILED (CODE 3)" on a migrated UDS)."""
-    if not any(rec):
-        return True
+def _unwritten_marker(rec):
+    """True for CBM DOS's never-written REL record: $FF in byte 0, rest zero.
+    Only meaningful for an id-keyed set (see ID_KEYED_SETS) — elsewhere this
+    byte pattern is valid data."""
     return rec[0] == 0xFF and not any(rec[1:])
 
 
-def trim_records(data, record_size):
-    """Drop trailing never-written records; pad a ragged tail to a whole
-    record; blank out never-written records in the middle so a $FF marker
-    can never be read as data."""
+def trim_records(data, record_size, id_keyed=False):
+    """Drop trailing all-zero records; pad a ragged tail to a whole record.
+    For an id-keyed set, also zero out never-written ($FF-marker) records so
+    the directory id 255 they would otherwise carry can't read as data (a
+    zeroed record is id 0, which the create scans skip). Other sets are left
+    byte-exact — an $FF byte there is legitimate data."""
     if record_size == 0:
         return b""
     if len(data) % record_size:
@@ -141,8 +148,10 @@ def trim_records(data, record_size):
     last = 0
     for i in range(0, len(data), record_size):
         rec = data[i:i + record_size]
-        if _record_blank(rec):
-            out += bytes(record_size)
+        if id_keyed and _unwritten_marker(rec):
+            out += bytes(record_size)          # -> id 0, skipped by the create scan
+        elif not any(rec):
+            out += bytes(record_size)          # all-zero: trailing-trimmed below
         else:
             out += rec
             last = i + record_size
@@ -430,7 +439,7 @@ def main():
             continue
         with open(tmp, "rb") as f:
             data = f.read()
-        out = trim_records(data, size) if size else data
+        out = trim_records(data, size, canon in ID_KEYED_SETS) if size else data
         if size and not out:
             # Nothing but never-written records: leave the file out, the same
             # as a set that does not exist yet (the BBS creates it on first use).
