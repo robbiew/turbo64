@@ -5,17 +5,31 @@
 #include <c64/kernalio.h>
 #include <string.h>
 
+/* RTS flow control around every KERNAL I/O (issue #27). Only the BOOT builds
+ * link net.c; CONFIGURE and the diagnostics have no modem, so there the
+ * hooks compile to nothing. */
+#ifdef T64_BOOT_OVERLAY
+#include "bbs/net.h"
+#define IO_HOLD    net_rx_hold()
+#define IO_RELEASE net_rx_release()
+#else
+#define IO_HOLD
+#define IO_RELEASE
+#endif
+
 char disk_errmsg[40] = { 0 };
 
 /* Scratch channel 15 and re-open for status read. */
 static u8 read_status(u8 device)
 {
     int r;
+    IO_HOLD;
     krnio_close(CFG_FNUM_CMD);
     krnio_setnam("");
     krnio_open(CFG_FNUM_CMD, device, 15);
     r = krnio_gets(CFG_FNUM_CMD, disk_errmsg, (int)sizeof(disk_errmsg));
     krnio_close(CFG_FNUM_CMD);
+    IO_RELEASE;
     if (r <= 0) return 99;
     return (u8)((disk_errmsg[0] - '0') * 10 + (disk_errmsg[1] - '0'));
 }
@@ -70,9 +84,11 @@ static bbs_err_t disk_verify_section_marker(u8 device)
 {
     u8 status;
 
+    IO_HOLD;
     krnio_setnam("0:T64.SIEC,S,R");
     krnio_open(CFG_FNUM_DATA, device, 2);
     krnio_close(CFG_FNUM_DATA);
+    IO_RELEASE;
     status = disk_status(device);
     /* Any DOS error, not just 62: a device that is absent, a wrong file
      * type or a bad name would otherwise pass and mark the section verified
@@ -245,10 +261,13 @@ bbs_err_t disk_load_overlay(const char *name)
         return BBS_EIO;
     }
 #endif
+    IO_HOLD;
     krnio_setnam(name);
     if (!krnio_load(1, bbs_cfg.device_system, 1)) {
+        IO_RELEASE;
         return BBS_EIO;
     }
+    IO_RELEASE;
     return BBS_OK;
 }
 
@@ -275,10 +294,13 @@ bbs_err_t disk_open(u8 device, u8 drive, const char *name, disk_mode_t mode)
     sprintf(fname, "0:%s%s", name, suffix);
 
 do_open:
+    IO_HOLD;
     krnio_setnam(fname);
     if (!krnio_open(CFG_FNUM_DATA, device, 2)) {
+        IO_RELEASE;
         return BBS_EIO;
     }
+    IO_RELEASE;
 
     /* Reset per-file EOF state: krnio_pstatus[fnum] persists across close/open.
      * A prior read to EOF leaves KRNIO_EOF, causing the next krnio_gets to
@@ -290,15 +312,20 @@ do_open:
 
 void disk_close(void)
 {
+    IO_HOLD;
     krnio_clrchn();
     krnio_close(CFG_FNUM_DATA);
+    IO_RELEASE;
     krnio_pstatus[CFG_FNUM_DATA] = KRNIO_OK; /* reset for next open */
     s_open_device = 0;
 }
 
 i16 disk_getc(void)
 {
-    int v = krnio_getch(CFG_FNUM_DATA);
+    int v;
+    IO_HOLD;
+    v = krnio_getch(CFG_FNUM_DATA);
+    IO_RELEASE;
     if (v < 0) return -1;
     if (krnio_pstatus[CFG_FNUM_DATA] & KRNIO_EOF) return -1;
     return (i16)(v & 0xFF);
@@ -309,21 +336,30 @@ i16 disk_read(u8 *buf, u8 len)
     /* krnio_read() does ONE krnio_chkin() + N×krnio_chrin() + ONE krnio_clrchn().
      * Dramatically faster than disk_getc() for bulk sequential reads:
      * krnio_getch() negotiates the IEC bus (CHKIN+CLRCHN) for every byte. */
-    int r = krnio_read(CFG_FNUM_DATA, (char *)buf, (int)len);
+    int r;
+    IO_HOLD;
+    r = krnio_read(CFG_FNUM_DATA, (char *)buf, (int)len);
+    IO_RELEASE;
     if (r < 0) return -1;
     return (i16)r;
 }
 
 i16 disk_gets(char *buf, u8 len)
 {
-    int r = krnio_gets(CFG_FNUM_DATA, buf, (int)len);
+    int r;
+    IO_HOLD;
+    r = krnio_gets(CFG_FNUM_DATA, buf, (int)len);
+    IO_RELEASE;
     if (r < 0) return -1;
     return (i16)r;
 }
 
 bbs_err_t disk_putc(char c)
 {
-    int r = krnio_putch(CFG_FNUM_DATA, c);
+    int r;
+    IO_HOLD;
+    r = krnio_putch(CFG_FNUM_DATA, c);
+    IO_RELEASE;
     return (r >= 0) ? BBS_OK : BBS_EIO;
 }
 
@@ -338,14 +374,21 @@ bbs_err_t disk_putc(char c)
  * even though krnio_write() already returned success. */
 bbs_err_t disk_write(const u8 *buf, u8 len)
 {
-    int r = krnio_write(CFG_FNUM_DATA, (const char *)buf, (int)len);
-    if (r != (int)len) return BBS_EIO;
-    return (krnio_status() == KRNIO_OK) ? BBS_OK : BBS_EIO;
+    int r;
+    bbs_err_t e;
+    IO_HOLD;
+    r = krnio_write(CFG_FNUM_DATA, (const char *)buf, (int)len);
+    e = (r != (int)len) ? BBS_EIO : ((krnio_status() == KRNIO_OK) ? BBS_OK : BBS_EIO);
+    IO_RELEASE;
+    return e;
 }
 
 bbs_err_t disk_puts(const char *s)
 {
-    int r = krnio_puts(CFG_FNUM_DATA, s);
+    int r;
+    IO_HOLD;
+    r = krnio_puts(CFG_FNUM_DATA, s);
+    IO_RELEASE;
     return (r >= 0) ? BBS_OK : BBS_EIO;
 }
 
@@ -389,9 +432,11 @@ bbs_err_t disk_cmd(u8 device, const char *cmd)
      * a disk_cmd() call — including the CP<n> call disk_select_partition()
      * itself makes through here. Invalidate unconditionally. */
     s_part_device = 0xFF;
+    IO_HOLD;
     krnio_setnam(cmd);
     krnio_open(CFG_FNUM_CMD, device, 15);
     krnio_close(CFG_FNUM_CMD);
+    IO_RELEASE;
     return check_status(device);
 }
 

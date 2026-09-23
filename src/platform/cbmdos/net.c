@@ -177,6 +177,44 @@ void net_irq_arm(void)
 }
 
 static net_state_t     s_state;
+/* Last value written to ACIA_CMD (DTR/RTS state), so net_rx_release() can
+ * restore exactly what the modem logic last asked for; s_hold_depth nests
+ * hold/release; s_acia_up gates both until net_init() has run. */
+static u8              s_cmd_shadow = CMD_DTR_ON;
+static u8              s_hold_depth;
+static bool_t          s_acia_up;
+
+#define CMD_RTS_MASK 0x0C   /* bits 3-2: 00 = RTS deasserted (high) */
+
+__noinline static void acia_set_cmd(u8 v)
+{
+    s_cmd_shadow = v;
+    ACIA_CMD = s_hold_depth ? (u8)(v & ~CMD_RTS_MASK) : v;
+}
+
+__noinline void net_rx_hold(void)
+{
+    if (s_hold_depth++ == 0 && s_acia_up) {
+        ACIA_CMD = (u8)(s_cmd_shadow & ~CMD_RTS_MASK);
+    }
+}
+
+__noinline void net_rx_release(void)
+{
+    if (s_hold_depth == 0) return;
+    if (--s_hold_depth == 0 && s_acia_up) {
+        /* The KERNAL load/disk path can reset the $0314 vector and stop
+         * Timer B (see net_rx()). The Ultimate releases the held bytes the
+         * instant RTS comes back, so the poll ISR must be alive FIRST or the
+         * first byte or two overrun the 6551 — measured: exactly "P\r" of a
+         * burst lost after an overlay load, the rest intact. */
+        if (*(void * volatile *)0x0314 != (void *)acia_irq_isr ||
+            (*(volatile u8 *)0xDC0F & 0x01) == 0) {
+            net_irq_setup();
+        }
+        ACIA_CMD = s_cmd_shadow;
+    }
+}
 static at_parser_t     s_at;
 /* s_iac lives in free RAM ($02A7-$02C7, the unused $02A7-$02FF block) to keep
  * its 33 bytes out of the resident region ($0880-$9700), which is at its hard
@@ -200,6 +238,11 @@ static bool_t          s_dsr_was_active;
  * hangup, leaving it stuck "connected". */
 static bool_t          s_at_mode;
 
+/* Boot-only (called from net_init() only): lives in the boot overlay. */
+#ifdef T64_BOOT_OVERLAY
+#pragma code(boot_code)
+#pragma data(boot_data)
+#endif
 static modem_type_t resolve_modem_type(void)
 {
     if (bbs_cfg.modem_type != MODEM_AUTO) {
@@ -215,6 +258,10 @@ static modem_type_t resolve_modem_type(void)
 
     return MODEM_VICE;
 }
+#ifdef T64_BOOT_OVERLAY
+#pragma code(code)
+#pragma data(data)
+#endif
 
 static void acia_putc(u8 b)
 {
@@ -231,6 +278,15 @@ static void acia_puts(const char *s)
     while (*s) acia_putc((u8)*s++);
 }
 
+/* Boot-only: runs once from boot_sequence(), which itself runs from the
+ * boot overlay, so it lives there too and costs nothing resident. Everything
+ * it sets up (state, shadow registers, the Timer-B latch) is resident data.
+ * acia_putc()/acia_puts() and s_at_mode deliberately stay OUTSIDE: they are
+ * used by every transmit for the life of the run. */
+#ifdef T64_BOOT_OVERLAY
+#pragma code(boot_code)
+#pragma data(boot_data)
+#endif
 bbs_err_t net_init(void)
 {
     u8 ctl;
@@ -265,7 +321,7 @@ bbs_err_t net_init(void)
     }
     s_tb_latch = (bbs_cfg.baud_rate == 38400) ? TIMERB_LATCH_FAST : TIMERB_LATCH_SLOW;
     ACIA_CTL = ctl;
-    ACIA_CMD = CMD_DTR_ON;
+    acia_set_cmd(CMD_DTR_ON);
 
     acia_puts("ATZ\r");
     acia_puts("ATS0=1\r");
@@ -278,8 +334,13 @@ bbs_err_t net_init(void)
         s_saw_dsr_inactive = TRUE;
     }
 
+    s_acia_up = TRUE;
     return BBS_OK;
 }
+#ifdef T64_BOOT_OVERLAY
+#pragma code(code)
+#pragma data(data)
+#endif
 
 net_state_t net_state(void) { return s_state; }
 
@@ -343,7 +404,7 @@ bbs_err_t net_rx(void *buf, u16 want, u16 *got)
         bool_t dsr_active = ((ACIA_STATUS & 0x40) == 0) ? TRUE : FALSE;
         if (!dsr_active || !s_dsr_was_active) {
             s_state = NET_IDLE;
-            ACIA_CMD = CMD_DTR_ON;
+            acia_set_cmd(CMD_DTR_ON);
             s_saw_dsr_inactive = TRUE;
         }
     }
@@ -485,7 +546,7 @@ bbs_err_t net_disconnect(void)
      * then re-assert DTR and move to NET_IDLE ready for the next caller.
      * Under VICE (s_dsr_was_active==FALSE), NET_DROPPING transitions to NET_IDLE
      * immediately since DSR is never driven. */
-    ACIA_CMD = CMD_DTR_OFF;
+    acia_set_cmd(CMD_DTR_OFF);
     s_state              = NET_DROPPING;
     s_saw_dsr_inactive   = FALSE;
     s_dsr_was_active     = FALSE;

@@ -190,6 +190,13 @@ static u16 reu_detect_internal(void)
 /* Returns the detected size in KB (0 if absent). Also records it in
  * bbs_cfg.reu_detected_size / reu_enabled. main.c prints the return value, so
  * it must be the real size, not a bool. */
+/* Boot-only (boot_sequence() and rel_seq_require_storage(), both of which
+ * run from the boot overlay), so it lives there too and costs nothing
+ * resident. The editor build has no overlays and keeps it in main. */
+#ifdef T64_BOOT_OVERLAY
+#pragma code(boot_code)
+#pragma data(boot_data)
+#endif
 u16 reu_detect(void)
 {
     u16 sz = reu_detect_internal();
@@ -197,6 +204,10 @@ u16 reu_detect(void)
     bbs_cfg.reu_enabled       = (sz != REU_SIZE_NONE) ? TRUE : FALSE;
     return sz;
 }
+#ifdef T64_BOOT_OVERLAY
+#pragma code(code)
+#pragma data(data)
+#endif
 
 u8 reu_bank_count(void)
 {

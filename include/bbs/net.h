@@ -61,6 +61,17 @@ bbs_err_t net_tx_raw(const void *buf, u16 n, u16 *sent);
 /* Drop the current call by de-asserting DTR. */
 bbs_err_t net_disconnect(void);
 
+/* Hardware flow control around IRQ-masked disk I/O. The KERNAL's IEC
+ * routines run with interrupts off, so the Timer-B RX poll cannot run and
+ * the 6551 (one byte of buffer) overruns on any burst that arrives during a
+ * disk operation. net_rx_hold() deasserts RTS so the Ultimate (which honours
+ * RTS on its emulated ACIA) holds the caller's bytes; net_rx_release() puts
+ * RTS back. Nestable: only the outermost pair touches the line. Both are
+ * no-ops until net_init() has brought the ACIA up. The disk HAL calls them
+ * around every KERNAL I/O; see issue #27. */
+void net_rx_hold(void);
+void net_rx_release(void);
+
 /* Returns the TERMINAL-TYPE string the remote sent during telnet
  * negotiation, e.g. "ansi", "petscii", "syncterm", or "" if not
  * yet received. Caller must not free or modify. */

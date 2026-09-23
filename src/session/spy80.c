@@ -1,6 +1,7 @@
 /* spy80.c - VIC-II hires bitmap engine for 80-col spy view. */
 #include "bbs/spy80.h"
 #include "bbs/types.h"
+#include "bbs/net.h"     /* net_rx_hold/release: RTS off while IRQs are masked (issue #27) */
 #include <c64/vic.h>
 #include <string.h>
 
@@ -51,6 +52,7 @@ static void spy80_render(u8 col, u8 row, u8 ch, u8 vic_color, u8 rev)
     SPY80_SCRN[(u16)row * 40u + col / 2u] = (u8)(vic_color << 4);
 
     old_bank = *CPU_PORT;
+    net_rx_hold();
     __asm { sei }
     *CPU_PORT = BANK_KERNAL_OUT;
 
@@ -72,6 +74,7 @@ static void spy80_render(u8 col, u8 row, u8 ch, u8 vic_color, u8 rev)
 
     *CPU_PORT = old_bank;
     __asm { cli }
+    net_rx_release();
 }
 
 void spy80_render_char(u8 col, u8 row, u8 ch, u8 vic_color)
@@ -103,7 +106,12 @@ void spy80_scroll(void)
     for (i = 0u;   i < 920u; i++) SPY80_SCRN[i] = SPY80_SCRN[i + 40u];
     for (i = 920u; i < 960u; i++) SPY80_SCRN[i] = 0x10u;
 
-    /* Bitmap: copy cell-rows 1-23 up to 0-22, one row per SEI window. */
+    /* Bitmap: copy cell-rows 1-23 up to 0-22, one row per SEI window.
+     * ~10 ms per row with IRQs off: at 38400 that is ~40 bytes the RX poll
+     * cannot see, so RTS is held for the whole copy and the Ultimate holds
+     * the caller's bytes instead (measured: a burst during a scroll lost
+     * nearly all of it). */
+    net_rx_hold();
     for (r = 0u; r < 23u; r++) {
         u16 dst = (u16)r * 320u;
         u16 src = dst + 320u;
@@ -115,6 +123,7 @@ void spy80_scroll(void)
         *CPU_PORT = old_bank;
         __asm { cli }
     }
+    net_rx_release();
     /* Clear the now-vacated bottom content row (row 23): pure writes. */
     for (i = 7360u; i < 7680u; i++) SPY80_BITMAP[i] = 0x00u;
 }
