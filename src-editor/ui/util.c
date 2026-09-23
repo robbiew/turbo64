@@ -16,7 +16,12 @@ void ui_print_line(const char *text)
 
 void ui_print_separator(void)
 {
-  printf("========================================\n");
+  u8 i;
+  /* Built at runtime, not stored: a 40-char literal cost ~40 resident bytes
+   * the SIEC editor build (9 bytes free) could not spare after the disk.c
+   * DISK_OVER change grew disk_open. */
+  for (i = 0; i < 40; i++) putchar('=');
+  putchar('\n');
 }
 
 void ui_print_centered(const char *text)
