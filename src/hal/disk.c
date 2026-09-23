@@ -111,19 +111,9 @@ static bbs_err_t disk_verify_section_marker(u8 device)
  * disk_select_partition()'s own #ifdef shape, since "home" resolves
  * differently per build but the exit-time obligation is identical.
  *
- * T64_STORE_SEQ: there is no config field for the tree root, so it is
- * derived by stripping bbs_cfg.init_system's last /-component — sound
- * because tools/migrate-d81.py always builds the section folders as
- * siblings of one root; a sysop-chosen layout that breaks this assumption
- * just makes the CD: land somewhere else, which is inert (see below), not
- * destructive.
- *
- * Reuses disk_errmsg as the command scratch buffer instead of adding a
- * static one: disk_cmd() -> check_status() -> read_status() overwrites
- * disk_errmsg right after krnio_open() has already consumed the name, so
- * nothing downstream ever observes the borrowed content. cut is bounded by
- * CFG_INIT_MAX-1 (23), so "CD:" + cut + NUL never exceeds sizeof(disk_errmsg)
- * (40) and needs no runtime bounds check.
+ * T64_STORE_SEQ: there is no config field for the tree root; it is the
+ * parent of the DEV_SYSTEM folder, captured once by cfg_init() via
+ * disk_set_root_from() (see s_root_cmd below for why once, not at use).
  *
  * A CD: to a wrong-but-existing folder is harmless (nothing here reads a
  * result), and CD: to a nonexistent one leaves the cursor unmoved (measured
@@ -140,22 +130,50 @@ static bbs_err_t disk_verify_section_marker(u8 device)
  * cfg_init() has run, bbs_cfg.drive_system is still its CFG_DRIVE_DEFAULT
  * (0) zero value, so this is correctly a no-op too — the same pre-init
  * no-op the T64_STORE_SEQ body gets from init_system still being empty. */
+#ifdef T64_STORE_SEQ
+/* "CD:<tree root>", captured ONCE by cfg_init() from the DEV_SYSTEM path it
+ * just read (the parent of the SYSTEM folder — migrate-d81.py always lays
+ * the sections out as siblings under one root). Captured rather than
+ * re-derived at use, because CONFIGURE's device editor rewrites
+ * bbs_cfg.init_system right before cfg_save(): deriving then would send
+ * the save to the NEW tree's parent, or nowhere for a bare device, while
+ * the next boot still reads CONFIG from where BOOT-SIEC was loaded. Empty
+ * until captured, and stays empty for a bare-device DEV_SYSTEM (no tree),
+ * in which case disk_cd_root() fails closed. */
+static char s_root_cmd[3 + CFG_INIT_MAX];
+
+void disk_set_root_from(const char *system_path)
+{
+    u8 i, cut = 0xFF;
+    for (i = 0; system_path[i]; i++) {
+        if (system_path[i] == '/') cut = i;
+    }
+    s_root_cmd[0] = '\0';
+    if (cut == 0xFF) return;                 /* no '/' at all: not a tree */
+    s_root_cmd[0] = 'C'; s_root_cmd[1] = 'D'; s_root_cmd[2] = ':';
+    if (cut == 0) {                          /* "/SYSTEM": the tree IS "/" */
+        s_root_cmd[3] = '/'; s_root_cmd[4] = '\0';
+        return;
+    }
+    for (i = 0; i < cut; i++) s_root_cmd[3 + i] = system_path[i];
+    s_root_cmd[3 + cut] = '\0';
+}
+
+/* CD to the captured tree root. Fails closed (BBS_EIO) when no root is
+ * known, so a caller writing CONFIG never silently lands in whatever
+ * section the cursor happens to be in. disk_cmd() invalidates the section
+ * cache, so the next section select re-issues its CD. */
+bbs_err_t disk_cd_root(u8 device)
+{
+    if (s_root_cmd[0] == '\0') return BBS_EIO;
+    return disk_cmd(device, s_root_cmd);
+}
+#endif
+
 void disk_reset_cursor_root(u8 device)
 {
 #ifdef T64_STORE_SEQ
-    char *cmd = disk_errmsg;
-    u8 i, cut = 0;
-
-    for (i = 0; bbs_cfg.init_system[i]; i++) {
-        if (bbs_cfg.init_system[i] == '/') cut = i;
-    }
-    if (cut == 0) return;
-
-    cmd[0] = 'C'; cmd[1] = 'D'; cmd[2] = ':';
-    for (i = 0; i < cut; i++) cmd[3 + i] = bbs_cfg.init_system[i];
-    cmd[3 + cut] = '\0';
-
-    disk_cmd(device, cmd);
+    (void)disk_cd_root(device);   /* nothing captured yet (pre-cfg_init): no-op */
 #else
     disk_select_partition(device, bbs_cfg.drive_system);
 #endif
@@ -167,6 +185,12 @@ bbs_err_t disk_select_partition(u8 device, u8 partition)
     char cmd[28];
     const char *path;
 
+    /* The tree root is not a section: CD there via the same derivation the
+     * exit path uses. disk_cmd() invalidates the cache, so the next real
+     * section select re-issues its CD instead of trusting a stale entry. */
+    if (partition == CFG_SECTION_ROOT) {
+        return disk_cd_root(device);
+    }
     if (partition >= CFG_SECTION_COUNT) return BBS_EIO;
     path = s_section_path[partition];
     if (!path || path[0] == '\0') return BBS_OK;

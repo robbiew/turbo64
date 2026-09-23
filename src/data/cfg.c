@@ -391,6 +391,7 @@ bbs_err_t cfg_init(void) {
   }
 
 #ifdef T64_STORE_SEQ
+  disk_set_root_from(bbs_cfg.init_system);   /* where CONFIG lives; cfg_save() writes there */
   disk_set_section_path(0, bbs_cfg.init_system);
   disk_set_section_path(1, bbs_cfg.init_msgs);
   disk_set_section_path(2, bbs_cfg.init_files);
@@ -429,10 +430,22 @@ bbs_err_t cfg_save(void) {
    * selects drive_msgs' partition; a config save afterwards would then land on
    * that partition instead of the one it was read from. Writing to
    * drive_system makes the destination deterministic. */
-  disk_scratch(bbs_cfg.device_system, bbs_cfg.drive_system, "CONFIG");
+#ifdef T64_STORE_SEQ
+  /* SoftIEC: cfg_init() reads CONFIG from the TREE ROOT — it runs before any
+   * section path is known, so it cannot do otherwise — while drive_system
+   * here would select the SYSTEM section. Measured on a C64 Ultimate: the
+   * save landed in SYSTEM/config.seq and the root copy was never touched,
+   * so every settings save from CONFIGURE was silently lost (issue #29).
+   * Write where the read happened: the root cfg_init() captured, not one
+   * derived now from init_system (the device editor may just have changed
+   * it). If no root is known the select fails and so does the save. */
+  const u8 part = CFG_SECTION_ROOT;
+#else
+  const u8 part = bbs_cfg.drive_system;
+#endif
+  disk_scratch(bbs_cfg.device_system, part, "CONFIG");
 
-  err = disk_open(bbs_cfg.device_system, bbs_cfg.drive_system, "CONFIG",
-                  DISK_WRITE);
+  err = disk_open(bbs_cfg.device_system, part, "CONFIG", DISK_WRITE);
   if (err != BBS_OK) {
     return err;
   }
