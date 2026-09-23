@@ -35,10 +35,16 @@ static u8  z_rxbuf[255]; /* disk-read / data-packet accumulation buffer */
  * a time; the ring overran, the CRC failed, and after the retries the
  * transfer died (measured: 2 KB upload from sz, file created, 0 bytes).
  * 255 = sizeof(z_rxbuf), the most one subpacket can hold here anyway. */
-#define ZRINIT_INFO (((u32)(CANFDX | CANOVIO) << 24) | 255u)
-/* The flags go in the LAST header byte (ZF0); the buffer size in the first
- * two. The old call passed the flags as the whole word, i.e. "buffer size
- * 3, no capabilities", which senders then had to guess around. */
+/* Flags in ZF0 (the last header byte); receive-buffer length in the first
+ * two. CANOVIO is deliberately NOT set: with it the sender streams 1 KB
+ * ZCRCG subpackets, but z_recv_data_pkt accumulates into a 255-byte buffer
+ * and the RX ring is 128 bytes, so anything over the buffer was dropped
+ * (and skipped from the CRC), the subpacket CRC failed, and the sender
+ * resent the same oversized block forever. Advertising a 64-byte buffer and
+ * no overlap makes lrzsz/SyncTerm send <=64-byte subpackets and wait for our
+ * ZACK — flow the 128-byte ring and the byte-at-a-time drain keep up with. */
+#define Z_RXBUF 64u
+#define ZRINIT_INFO (((u32)CANFDX << 24) | Z_RXBUF)
 static u8  z_tx[160];    /* tx staging; flushed via net_tx_raw */
 static u8  z_txlen;
 static u8  z_cancel_cnt; /* consecutive ZDLE bytes seen (5 = abort) */
