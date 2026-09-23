@@ -63,6 +63,7 @@ static u8          s_spy_last_sec = 255;
  * NET_DROPPING state settles. Reset per session in session_init(). */
 static clock_tod_t s_idle_mark;
 static bool_t      s_idle_fired = FALSE;
+static u16         s_keepalive_at;   /* idle second the last keepalive went out at */
 
 /* MINS/DAY enforcement state (per session). Armed by session_time_begin();
  * checked once/second from sess_getc() via session_time_check(). */
@@ -292,6 +293,7 @@ void session_spy_init(session_t *s)
     /* Arm the keyboard idle watchdog from the moment of connect. */
     s_idle_mark = s_spy_start;
     s_idle_fired = FALSE;
+    s_keepalive_at = 0;
 
     if ((s->term_mode == TERM_ANSI_CP437 || s->term_mode == TERM_ASCII)
             && bbs_cfg.reu_enabled) {
@@ -508,8 +510,6 @@ void session_spy_poll(void)
 
 /* Drop a remote caller who has been idle past bbs_cfg.idle_timeout_mins.
  * No-op when the timeout is disabled (0) or already fired this session. */
-static u16 s_keepalive_at;   /* idle second the last keepalive went out at */
-
 static void sess_idle_check(void)
 {
     clock_tod_t now;
