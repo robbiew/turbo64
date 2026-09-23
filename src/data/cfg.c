@@ -370,6 +370,12 @@ static bbs_err_t cfg_load_impl(void) {
  * to run. The editor build has no overlay either way, so this is a thin
  * pass-through in both builds.
  */
+/* Boot-only in the BOOT build (boot_sequence() is the only caller and runs
+ * from the boot overlay), so it lives there too. */
+#ifdef T64_BOOT_OVERLAY
+#pragma code(boot_code)
+#pragma data(boot_data)
+#endif
 bbs_err_t cfg_init(void) {
   bbs_err_t err;
   err = cfg_load_impl();
@@ -400,6 +406,10 @@ bbs_err_t cfg_init(void) {
 #endif
   return err;
 }
+#ifdef T64_BOOT_OVERLAY
+#pragma code(code)
+#pragma data(data)
+#endif
 
 /* First disk_puts failure across a whole cfg_save pass; later writes are
  * skipped once an error is latched (they would write into a broken file). */
