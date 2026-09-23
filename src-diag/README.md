@@ -91,3 +91,9 @@ ineffective on both JiffyDOS and stock kernals. Confirm the device number first.
 Separately, on the test machine a **JiffyDOS kernal hung on a uIEC at device 10** with
 the card both inserted and removed; the stock kernal worked. Cause not established.
 If a device seems absent, try a stock kernal before concluding anything.
+
+## Modem emulation
+
+`ultimate-modem-report.md` in this folder is the measured write-up of the C64 Ultimate's
+ACIA/SwiftLink emulation dying after some caller disconnects (turbo64 issue #31), with
+the reproducer, for filing upstream with the Ultimate firmware project.
