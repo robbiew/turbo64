@@ -74,6 +74,12 @@
 static volatile u8 s_rx_head;
 static volatile u8 s_rx_tail;
 
+/* Last value written to ACIA_CMD (DTR/RTS bits). The Timer-B ISR reads it to
+ * deassert RTS at the ring high-water mark, so it must be declared before the
+ * ISR. CMD_RTS_MASK is bits 3-2 (00 = RTS deasserted/high). */
+#define CMD_RTS_MASK 0x0C
+static u8 s_cmd_shadow = CMD_DTR_ON;
+
 /* Timer-B reload, in phi2 cycles (~1.02 MHz).  The 6551 holds ONE received
  * byte, so two consecutive drains must never be further apart than a byte
  * time, including IRQ latency: the instruction in flight (<= 7 cycles), a VIC
@@ -91,7 +97,12 @@ static volatile u8 s_rx_tail;
  *   machine).  The latch is picked per configured rate in net_init(), so
  *   9600/19200 setups keep the cheaper tick. */
 #define TIMERB_LATCH_SLOW 250   /* <= 19200 */
-#define TIMERB_LATCH_FAST 160   /* 38400 */
+/* 38400. Was 160 (~50 cycles of margin), which survived short frames but a VIC
+ * bad line eating that margin dropped ~1 byte in a 40+ byte Zmodem subpacket —
+ * enough to fail every upload on CRC. 120 restores the margin that measured
+ * 10-of-10 intact (comment above), at more interrupt load — the price of
+ * reliable 38400 receive on a 1 MHz machine, paid only on 38400 setups. */
+#define TIMERB_LATCH_FAST 120   /* 38400 */
 static u8 s_tb_latch = TIMERB_LATCH_SLOW;
 
 /* CIA#1 Timer-B IRQ, chained off $0314.  Reads the CIA ICR once (which clears
@@ -126,6 +137,20 @@ tbloop:
     lda $de00
     sta $033c, x        // s_rx_buf @ $033C (cassette buffer)
     inc s_rx_tail
+    // Hardware flow control: when the ring fills past the high-water mark,
+    // deassert RTS so the (un-rate-limited) sender pauses before the 128-byte
+    // ring overruns. net_rx_raw re-asserts once the consumer drains it below
+    // the low-water mark. 64 leaves 64 bytes of headroom for RTS-response
+    // latency. Without this, a streamed 1 KB Zmodem subpacket dropped ~a
+    // ring's worth of bytes (issue #36).
+    lda s_rx_tail
+    sec
+    sbc s_rx_head
+    cmp #16
+    bcc tbloop
+    lda s_cmd_shadow
+    and #$f3            // ~CMD_RTS_MASK: deassert RTS, keep DTR
+    sta $de02          // ACIA_CMD
     jmp tbloop
 chkta:
     pla
@@ -187,11 +212,9 @@ static net_state_t     s_state;
 /* Last value written to ACIA_CMD (DTR/RTS state), so net_rx_release() can
  * restore exactly what the modem logic last asked for; s_hold_depth nests
  * hold/release; s_acia_up gates both until net_init() has run. */
-static u8              s_cmd_shadow = CMD_DTR_ON;
 static u8              s_hold_depth;
 static bool_t          s_acia_up;
 
-#define CMD_RTS_MASK 0x0C   /* bits 3-2: 00 = RTS deasserted (high) */
 
 __noinline static void acia_set_cmd(u8 v)
 {
@@ -523,6 +546,12 @@ bbs_err_t net_rx(void *buf, u16 want, u16 *got)
             p[(*got)++] = outbyte;
     }
 
+    /* Re-assert RTS once the ring has drained below the low-water mark (the
+     * ISR deasserts it at high-water). Skipped while a disk hold owns RTS. */
+    if (s_hold_depth == 0 && (u8)(s_rx_tail - s_rx_head) < 8u) {
+        ACIA_CMD = s_cmd_shadow;
+    }
+
     if (s_state != NET_CONNECTED && *got == 0) return BBS_EAGAIN;
     return BBS_OK;
 }
@@ -576,6 +605,14 @@ bbs_err_t net_rx_raw(void *buf, u16 want, u16 *got)
             s_rx_head++;
         }
         p[(*got)++] = in;
+    }
+
+    /* Re-assert RTS once the ring drains below the low-water mark, same as
+     * net_rx(): the ISR deasserts it at high-water, and without this the raw
+     * (Zmodem) path leaves RTS low after the first >16-byte frame, stalling
+     * every subsequent inbound frame. Skipped while a disk hold owns RTS. */
+    if (s_hold_depth == 0 && (u8)(s_rx_tail - s_rx_head) < 8u) {
+        ACIA_CMD = s_cmd_shadow;
     }
 
     if (s_state != NET_CONNECTED && *got == 0) return BBS_EAGAIN;
