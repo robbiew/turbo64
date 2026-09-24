@@ -116,6 +116,21 @@ the RTS-resume behaviour that fails. But neither lrzsz nor SyncTerm can be coerc
 that mode (both stream 512–1024-byte blocks and ignore the receiver's advertised buffer
 size), so it is not a usable workaround with real clients.
 
+The same fault appears with the **Punter** protocol, which is lock-step (the sender waits
+for the receiver's ACK between blocks) and so should have been immune — and its block
+*reception* is: a full 248-byte Punter block is received byte-perfect and written to the
+SoftIEC file correctly. But every handshake token the sender must send *immediately after
+the receiver writes a block to disk* (the next block's ACK, or the end-of-session tokens)
+is lost, and the transfer stalls after the first block. Polling the 6551 registers from
+REST during such a stall, while the sending client transmits ACKs continuously, shows the
+receiver never sees them: `$DE01` bit 3 (RDRF) never sets even though `$DE02` shows RTS
+asserted — the firmware has stopped delivering inbound bytes to the ACIA and does not
+resume. Around the disk write `$DE01`/`$DE02` were also caught reading `$00`/`$FF` (the
+dead-ACIA state above) before recovering to a live-but-not-delivering state. Removing the
+C64's RTS hold around the write (so RTS never toggles) did not change this, which points
+at the KERNAL IEC transaction to the emulated SoftIEC drive itself disturbing the ACIA
+emulation's inbound delivery, rather than the RTS line specifically.
+
 ## What would help
 
 - Any way to reset the modem emulation without a firmware reboot (a REST action, or
