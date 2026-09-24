@@ -1,4 +1,4 @@
-# C64 Ultimate: ACIA/SwiftLink modem emulation stops responding after a caller disconnects
+# C64 Ultimate: ACIA/SwiftLink modem emulation issues (stall after disconnect; RX not resuming after brief RTS deassert)
 
 Draft of an upstream report for the Ultimate firmware project. Everything below was
 measured on the hardware described; nothing is inferred from documentation.
@@ -67,6 +67,43 @@ does not notice the peer's FIN on its own in this state (it did after 175 s when
 BBS's idle timeout dropped DTR). That one is handled on the C64 side now; the dead-ACIA
 state above is not recoverable from the C64.
 
+## A third state: RX delivery does not resume after a brief RTS deassert→reassert
+
+This one is separate from the two above (the ACIA stays alive throughout) and is the
+blocker for flow-controlled inbound bulk transfer (a Zmodem *upload* to the BBS).
+
+With RTS Handshake (Rx) enabled, the firmware correctly pauses delivery to the ACIA
+when the C64 deasserts RTS (`$DE02` bits 3-2 → `00`, /RTS high) and holds the caller's
+bytes. It resumes correctly when RTS is re-asserted **after a long deassert** — e.g. the
+C64 holds RTS low-water off for the duration of a disk write (order of milliseconds) and
+then re-asserts; delivery resumes and no bytes are lost.
+
+It does **not** reliably resume when the deassert→reassert is **brief** — the C64's
+interrupt-driven receiver deasserts RTS at a ring high-water mark and re-asserts a few
+bytes later once it has drained below a low-water mark, on the order of tens of
+microseconds. After one of these brief cycles the firmware sometimes never resumes:
+the C64 has RTS asserted (`$DE02` reads `$0B` = DTR on, /RTS low), its receive ring is
+empty, `$DE01` shows no RDRF and no overrun/framing error — the C64 is idle and asking
+for data — but no further bytes are delivered, and the caller's TCP still has the rest of
+the file queued. The C64 receiver times out waiting.
+
+Measured on the same unit, 38400 baud, uploading a 256-byte file with `lrzsz sz` over
+the telnet bridge:
+- The transfer streams correctly through every data block that ends in a long
+  RTS-hold (a disk write), then stalls in the final block, which has only the brief
+  ISR-driven RTS blips before it — deterministically at ~248 of 256 bytes.
+- It is independent of content (an all-`A` file stalls identically), of client-side
+  pacing (2–4 ms/byte stalls identically), and of the Modem "Loop Delay" setting
+  (tried 2, 20, 100 — all stall at exactly the same byte).
+- Making the brief blips *more* frequent (a disk write every 8 bytes instead of 32)
+  moves the stall earlier (~202), i.e. more RTS toggles, not fewer stalls.
+
+The C64-side workaround options are poor: raising the high-water mark to avoid the blip
+lets the un-rate-limited RX burst overrun the single-byte 6551 receive register instead
+(dropped bytes → CRC failure). So reliable inbound flow control seems to need the
+firmware to resume delivery on the RTS re-assert edge regardless of how briefly RTS was
+deasserted.
+
 ## What would help
 
 - Any way to reset the modem emulation without a firmware reboot (a REST action, or
@@ -74,3 +111,6 @@ state above is not recoverable from the C64.
 - If the `$00`/`$FF` register reads are a known "emulation halted" state, a hint in the
   docs; the boot screen of the BBS now prints "ACIA DEAD? REBOOT THE ULTIMATE" when it
   sees `$00`, but nothing else on the machine indicates the fault.
+- For the third state: resume RX delivery on the RTS re-assert edge regardless of how
+  briefly RTS was deasserted (or document a minimum RTS-deassert duration the firmware
+  requires), so a receiver can use short high/low-water RTS pulses for flow control.
