@@ -97,7 +97,12 @@ static u8 s_cmd_shadow = CMD_DTR_ON;
  *   machine).  The latch is picked per configured rate in net_init(), so
  *   9600/19200 setups keep the cheaper tick. */
 #define TIMERB_LATCH_SLOW 250   /* <= 19200 */
-#define TIMERB_LATCH_FAST 160   /* 38400 */
+/* 38400. Was 160 (~50 cycles of margin), which survived short frames but a VIC
+ * bad line eating that margin dropped ~1 byte in a 40+ byte Zmodem subpacket —
+ * enough to fail every upload on CRC. 120 restores the margin that measured
+ * 10-of-10 intact (comment above), at more interrupt load — the price of
+ * reliable 38400 receive on a 1 MHz machine, paid only on 38400 setups. */
+#define TIMERB_LATCH_FAST 120   /* 38400 */
 static u8 s_tb_latch = TIMERB_LATCH_SLOW;
 
 /* CIA#1 Timer-B IRQ, chained off $0314.  Reads the CIA ICR once (which clears
@@ -600,6 +605,14 @@ bbs_err_t net_rx_raw(void *buf, u16 want, u16 *got)
             s_rx_head++;
         }
         p[(*got)++] = in;
+    }
+
+    /* Re-assert RTS once the ring drains below the low-water mark, same as
+     * net_rx(): the ISR deasserts it at high-water, and without this the raw
+     * (Zmodem) path leaves RTS low after the first >16-byte frame, stalling
+     * every subsequent inbound frame. Skipped while a disk hold owns RTS. */
+    if (s_hold_depth == 0 && (u8)(s_rx_tail - s_rx_head) < 8u) {
+        ACIA_CMD = s_cmd_shadow;
     }
 
     if (s_state != NET_CONNECTED && *got == 0) return BBS_EAGAIN;

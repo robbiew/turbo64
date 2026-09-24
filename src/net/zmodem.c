@@ -469,6 +469,7 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
     i16    pkt_len;
     u32    fpos = 0;
     u8     retries;
+    clock_tod_t t0, tlast, tnow;
     const char *dest;
 
     z_cancel_cnt = 0; z_txlen = 0;
@@ -480,17 +481,29 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
        proceeds to ZFILE the moment it sees any ZRINIT.  Emitting it once (and
        only re-emitting on a cleanly-parsed ZRQINIT) loses the race: our lone
        ZRINIT fires before the sender is listening, and if its ZRQINIT drops a
-       byte we never answer.  So re-announce every ~3s regardless of what comes
-       back; the sender catches one inside its listen window and starts. */
+       byte we never answer.
+       BUT the re-announce must be gated on a WALL CLOCK, never sent once per
+       loop iteration: z_recv_header can return immediately (spurious/echoed RX
+       bytes with nothing from the client), and an unconditional per-iteration
+       send then spins at line rate — a flood that crashes the Ultimate ACIA.
+       So announce at most once every Z_ZRINIT_GAP seconds, give up after
+       Z_HELLO_SECS total. */
+    clock_read(&t0); tlast = t0;
+    z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
     z_rx_tmax = 3;
     frame = 0;
-    for (retries = 0; retries < 20; retries++) {
-        z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
+    for (;;) {
         frame = z_recv_header(s, &pos);
         if (frame == ZFILE) break;
         if (frame == ZFIN) { z_rx_tmax = 10; z_send_hex_hdr(ZRINIT, 0); return ZMODEM_OK; }
         if (frame == ZABORT || frame == -2) { z_rx_tmax = 10; z_send_cancel(); return ZMODEM_CANCEL; }
         if (!sess_carrier_ok(s)) { frame = -1; break; }
+        clock_read(&tnow);
+        if (clock_elapsed(&t0, &tnow) >= 60u) { frame = -1; break; }
+        if (clock_elapsed(&tlast, &tnow) >= 3u) {
+            z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
+            tlast = tnow;
+        }
     }
     z_rx_tmax = 10;
     if (frame != ZFILE) {
