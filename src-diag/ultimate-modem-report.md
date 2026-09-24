@@ -104,6 +104,18 @@ lets the un-rate-limited RX burst overrun the single-byte 6551 receive register 
 firmware to resume delivery on the RTS re-assert edge regardless of how briefly RTS was
 deasserted.
 
+The same non-resume also breaks the *end* of a small transfer, not just bulk data: a
+31-byte Zmodem upload streams its one data block fine, but the sender's following ZEOF
+frame arrives right after the receiver's final disk-write RTS toggle and is not
+delivered, so the sender times out and resends — several times — before one finally gets
+through. A cooperating sender (SyncTerm, lrzsz) therefore cannot cleanly finish even a
+tiny upload over this ACIA. Proven separately: a sender that never relies on RTS (waits
+for an application-level ZACK between small blocks instead) transfers a 256-byte file
+byte-perfect through the same BBS, so the receiver and protocol are correct — it is only
+the RTS-resume behaviour that fails. But neither lrzsz nor SyncTerm can be coerced into
+that mode (both stream 512–1024-byte blocks and ignore the receiver's advertised buffer
+size), so it is not a usable workaround with real clients.
+
 ## What would help
 
 - Any way to reset the modem emulation without a firmware reboot (a REST action, or

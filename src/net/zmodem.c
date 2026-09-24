@@ -48,6 +48,12 @@ static u8  z_rxbuf[255]; /* disk-read / data-packet accumulation buffer */
  * streams 1 KB subpackets), so an lrzsz upload is not fixed by this alone —
  * the receiver must accept a large streamed subpacket, which is issue #36. */
 #define Z_RXBUF 64u
+/* CANFDX is required: SyncTerm aborts the handshake on a flagless ZRINIT. A
+ * sender that honours the advertised rxbuflen would window (<=64-byte blocks,
+ * ZACK-paced) and completely avoid the Ultimate ACIA RTS-resume bug (#36) —
+ * proven with a purpose-built windowed sender: 256 B uploaded byte-perfect.
+ * But neither lrzsz sz nor SyncTerm honour it; both stream 512-1024 B blocks
+ * and rely on RTS, so large uploads still stall on the firmware bug. */
 #define ZRINIT_INFO (((u32)CANFDX << 24) | Z_RXBUF)
 #define Z_FLUSH 32u   /* data-subpacket flush granularity — see z_recv_data_to_disk */
 static u8  z_tx[160];    /* tx staging; flushed via net_tx_raw */
@@ -527,12 +533,15 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
      * subpacket is needed, and the per-byte disk write's RTS hold paces the
      * sender. A ZRPOS(fpos) restarts the file from a known offset; since a
      * SEQ file cannot be rewound, a CRC error truncates and restarts from 0.
-     * Structured as: (re)position, read a ZDATA header, stream subpackets to
+     * Structured as: position ONCE, read a ZDATA header, stream subpackets to
      * the end of the frame, then read the next header (another ZDATA, or ZEOF
-     * to finish). */
-    for (;;) {                                   /* (re)position + data frames */
-        z_send_hex_hdr(ZRPOS, fpos);
-
+     * to finish). ZRPOS is sent only to (re)position — once at the start, and
+     * again after a CRC error resets fpos to 0. It must NOT be re-sent on every
+     * data frame: ZRPOS(fpos) at end-of-data means "resend from fpos", and a
+     * sender that has just sent ZEOF (fpos == EOF) rejects it as an invalid
+     * position and aborts (SyncTerm: "Received INVALID ZRPOS offset"). */
+    z_send_hex_hdr(ZRPOS, fpos);                 /* initial position (0) */
+    for (;;) {                                   /* data frames */
         for (retries = 0; retries < 8; retries++) {   /* wait for ZDATA/ZEOF */
             frame = z_recv_header(s, &pos);
             if (frame == ZDATA || frame == ZEOF) break;
@@ -544,6 +553,24 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
             disk_close();
             session_emit(s, "\r\nNO DATA FROM SENDER.\r\n");
             return ZMODEM_ERR;
+        }
+
+        /* Duplicate frame: ZDATA whose position is behind what we already have
+         * on disk. A SEQ file cannot be rewound, so we cannot overwrite — but
+         * appending it would duplicate the data (measured: when the ACIA RTS
+         * bug delayed our ZEOF ack, SyncTerm resent the whole 31-byte file ~8x
+         * and the receiver appended each copy → a 248-byte file). Read the
+         * frame to the RAM scratch buffer and DISCARD it so fpos does not move;
+         * the sender keeps retrying until its ZEOF finally gets our ZRINIT. */
+        if (pos < fpos) {
+            for (;;) {
+                u8 dm;
+                i16 dr = z_recv_data_pkt(s, z_rxbuf, sizeof(z_rxbuf), &dm);
+                if (dr == -2) { disk_close(); z_send_cancel(); return ZMODEM_CANCEL; }
+                if (dr < 0) break;                       /* timeout/CRC: drop it */
+                if (dm == ZCRCW || dm == ZCRCE) break;   /* end of this frame */
+            }
+            continue;                                    /* wait for next header */
         }
 
         for (;;) {                               /* subpackets in this frame */
@@ -567,7 +594,8 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
                     return ZMODEM_ERR;
                 }
                 fpos = 0;
-                break;                           /* -> outer loop re-ZRPOS(0) */
+                z_send_hex_hdr(ZRPOS, 0);        /* reposition sender to 0 */
+                break;                           /* -> outer loop waits for ZDATA */
             }
             if (r < 0) {
                 char msg[40];
