@@ -53,6 +53,7 @@ static u8  z_rxbuf[255]; /* disk-read / data-packet accumulation buffer */
 static u8  z_tx[160];    /* tx staging; flushed via net_tx_raw */
 static u8  z_txlen;
 static u8  z_cancel_cnt; /* consecutive ZDLE bytes seen (5 = abort) */
+static u8  z_rx_tmax = 10; /* z_rx_byte inter-byte timeout, seconds (tunable per phase) */
 
 /* -----------------------------------------------------------------------
  * CRC-16/CCITT — bitwise, no table
@@ -158,7 +159,7 @@ static i16 z_rx_byte(const session_t *s)
         }
         if (!sess_carrier_ok(s)) return -1;
         { clock_tod_t tn; clock_read(&tn);
-          if (clock_elapsed(&t0, &tn) >= 10u) return -1; }
+          if (clock_elapsed(&t0, &tn) >= (u16)z_rx_tmax) return -1; }
     }
 }
 
@@ -474,21 +475,24 @@ __noinline zmodem_result_t zmodem_recv(const session_t *s, u8 device, u8 drive,
 
     session_emit(s, "\r\nZMODEM - START YOUR UPLOAD NOW (X TO STOP)\r\n");
 
-    /* Advertise our capabilities */
-    z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
-
-    /* Wait for ZFILE */
+    /* Wait for ZFILE.  A Zmodem receiver drives the handshake by *repeatedly*
+       announcing ZRINIT — the sender's ZRQINIT is only a prompt, and a sender
+       proceeds to ZFILE the moment it sees any ZRINIT.  Emitting it once (and
+       only re-emitting on a cleanly-parsed ZRQINIT) loses the race: our lone
+       ZRINIT fires before the sender is listening, and if its ZRQINIT drops a
+       byte we never answer.  So re-announce every ~3s regardless of what comes
+       back; the sender catches one inside its listen window and starts. */
+    z_rx_tmax = 3;
     frame = 0;
-    for (retries = 0; retries < 10; retries++) {
+    for (retries = 0; retries < 20; retries++) {
+        z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
         frame = z_recv_header(s, &pos);
         if (frame == ZFILE) break;
-        if (frame == ZFIN) { z_send_hex_hdr(ZRINIT, 0); return ZMODEM_OK; }
-        if (frame == ZABORT || frame == -2) { z_send_cancel(); return ZMODEM_CANCEL; }
-        if (frame == ZRQINIT) {
-            z_send_hex_hdr(ZRINIT, ZRINIT_INFO);
-            retries = 0;
-        }
+        if (frame == ZFIN) { z_rx_tmax = 10; z_send_hex_hdr(ZRINIT, 0); return ZMODEM_OK; }
+        if (frame == ZABORT || frame == -2) { z_rx_tmax = 10; z_send_cancel(); return ZMODEM_CANCEL; }
+        if (!sess_carrier_ok(s)) { frame = -1; break; }
     }
+    z_rx_tmax = 10;
     if (frame != ZFILE) {
         session_emit(s, "\r\nNO FILE FROM SENDER.\r\n");
         return ZMODEM_ERR;
