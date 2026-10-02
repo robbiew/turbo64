@@ -2,7 +2,7 @@
 
 > **Note:** This project is under active development and is not yet feature-complete.
 
-## What This Is: A Functional Anachronism
+## What This Is: A Tike Capsule
 
 TURBO/64 BBS is a Commodore 64 BBS written in C for the [Oscar64 compiler](https://github.com/drmortalwombat/oscar64). It targets native `.prg` output for real hardware (including C64 Ultimate) and VICE emulation.
 
